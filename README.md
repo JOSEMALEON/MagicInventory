@@ -14,22 +14,6 @@ The application allows users to search cards using the **Scryfall API**, store t
 
 ---
 
-# 🎨 UI Color Palette
-
-The application uses a **monochromatic blue palette** centered around the primary color **#7093EF**.
-
-| Color | Code | Preview |
-|------|------|------|
-| Deep Indigo | `#1E2A4A` | ![#1E2A4A](https://via.placeholder.com/40/1E2A4A/FFFFFF?text=+) |
-| Dark Periwinkle | `#3F5FA8` | ![#3F5FA8](https://via.placeholder.com/40/3F5FA8/FFFFFF?text=+) |
-| Primary Blue | `#7093EF` | ![#7093EF](https://via.placeholder.com/40/7093EF/FFFFFF?text=+) |
-| Light Azure | `#9FB8F5` | ![#9FB8F5](https://via.placeholder.com/40/9FB8F5/FFFFFF?text=+) |
-| Ice Blue | `#D6E1FF` | ![#D6E1FF](https://via.placeholder.com/40/D6E1FF/000000?text=+) |
-
-These colors are used to create a **clean and modern interface with consistent visual hierarchy**.
-
----
-
 # ✨ Current Features
 
 The application currently includes:
