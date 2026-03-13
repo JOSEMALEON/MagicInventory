@@ -2,17 +2,25 @@ from PySide6.QtWidgets import (
     QApplication,
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QLineEdit,
     QTextEdit,
-    QSpinBox
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem
 )
+
+from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QGroupBox
+
+import requests
+import sys
 
 from api.scryfall_api import search_card_by_name
 from database.database_manager import add_card, get_all_cards, create_database
-
-import sys
 
 
 class MainWindow(QWidget):
@@ -20,11 +28,11 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
 
-        # Asegura que la base de datos exista
+        # Crear base de datos si no existe
         create_database()
 
         self.setWindowTitle("Magic Inventory")
-        self.setMinimumSize(400, 450)
+        self.setMinimumSize(800, 600)
 
         layout = QVBoxLayout()
 
@@ -41,10 +49,23 @@ class MainWindow(QWidget):
         search_button.clicked.connect(self.search_card)
         layout.addWidget(search_button)
 
-        # Área de resultados
+        # Layout horizontal para imagen + información
+        card_group = QGroupBox("Card Information")
+
+        card_layout = QHBoxLayout()
+
+        self.card_image = QLabel()
+        self.card_image.setFixedSize(200, 280)
+        card_layout.addWidget(self.card_image)
+
         self.result_area = QTextEdit()
         self.result_area.setReadOnly(True)
-        layout.addWidget(self.result_area)
+        self.result_area.setFixedHeight(120)
+        card_layout.addWidget(self.result_area)
+
+        card_group.setLayout(card_layout)
+
+        layout.addWidget(card_group)
 
         # Selector de cantidad
         quantity_label = QLabel("Quantity")
@@ -55,7 +76,7 @@ class MainWindow(QWidget):
         self.quantity_input.setMaximum(100)
         layout.addWidget(self.quantity_input)
 
-        # Botón añadir a colección
+        # Botón guardar
         save_button = QPushButton("Add to Collection")
         save_button.clicked.connect(self.save_card)
         layout.addWidget(save_button)
@@ -64,6 +85,21 @@ class MainWindow(QWidget):
         collection_button = QPushButton("Show Collection")
         collection_button.clicked.connect(self.show_collection)
         layout.addWidget(collection_button)
+
+        # Tabla colección
+        self.collection_table = QTableWidget()
+        self.collection_table.setColumnCount(4)
+        self.collection_table.setHorizontalHeaderLabels(
+            ["Image", "Name", "Set", "Quantity"]
+        )
+
+        self.collection_table.setColumnWidth(0, 120)
+        self.collection_table.verticalHeader().setDefaultSectionSize(150)
+
+        self.collection_table.setMinimumHeight(300)
+        self.collection_table.horizontalHeader().setStretchLastSection(True)
+
+        layout.addWidget(self.collection_table)
 
         # Botón salir
         exit_button = QPushButton("Exit")
@@ -88,6 +124,20 @@ class MainWindow(QWidget):
         if card:
 
             self.current_card = card
+
+            # Mostrar imagen
+            try:
+                response = requests.get(card.image_url)
+
+                if response.status_code == 200:
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(response.content)
+                    pixmap = pixmap.scaledToWidth(200)
+
+                    self.card_image.setPixmap(pixmap)
+
+            except Exception:
+                pass
 
             result_text = f"""
 Name: {card.name}
@@ -122,16 +172,54 @@ Rarity: {card.rarity}
 
         cards = get_all_cards()
 
+        # limpiar imagen de búsqueda
+        self.card_image.clear()
+
         if not cards:
-            self.result_area.setText("Collection is empty")
+            self.collection_table.setRowCount(0)
             return
 
-        text = "Your Collection:\n\n"
+        self.collection_table.setRowCount(len(cards))
 
-        for card in cards:
-            text += f"{card.name} × {card.quantity}\n"
+        for row, card in enumerate(cards):
 
-        self.result_area.setText(text)
+            # Imagen
+            try:
+                response = requests.get(card.image_url)
+
+                if response.status_code == 200:
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(response.content)
+
+                    pixmap = pixmap.scaled(
+                        100,
+                        140,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    )
+
+                    label = QLabel()
+                    label.setPixmap(pixmap)
+
+                    self.collection_table.setCellWidget(row, 0, label)
+
+            except Exception:
+                pass
+
+            # Nombre
+            self.collection_table.setItem(
+                row, 1, QTableWidgetItem(card.name)
+            )
+
+            # Set
+            self.collection_table.setItem(
+                row, 2, QTableWidgetItem(card.set_name)
+            )
+
+            # Quantity
+            self.collection_table.setItem(
+                row, 3, QTableWidgetItem(str(card.quantity))
+            )
 
 
 def run_app():
@@ -139,6 +227,6 @@ def run_app():
     app = QApplication(sys.argv)
 
     window = MainWindow()
-    window.show()
-
+    window.showMaximized()
+    
     sys.exit(app.exec())
