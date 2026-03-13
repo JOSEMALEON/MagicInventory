@@ -11,10 +11,8 @@ def main():
 
     if card:
 
-        print("\nCard found:\n")
-
-        for key, value in card.items():
-            print(f"{key}: {value}")
+        print("\nCard found:")
+        print(card)
 
     else:
         print("Card not found")
