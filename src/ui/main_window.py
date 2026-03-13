@@ -35,6 +35,8 @@ class MainWindow(QWidget):
         self.setMinimumSize(800, 600)
 
         layout = QVBoxLayout()
+        layout.setSpacing(0)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         title = QLabel("Magic Inventory")
         layout.addWidget(title)
@@ -51,6 +53,7 @@ class MainWindow(QWidget):
 
         # Layout horizontal para imagen + información
         card_group = QGroupBox("Card Information")
+        card_group.setStyleSheet("border: none;")
 
         card_layout = QHBoxLayout()
 
@@ -69,6 +72,7 @@ class MainWindow(QWidget):
 
         # Selector de cantidad
         quantity_label = QLabel("Quantity")
+        quantity_label.setStyleSheet("border: none;")
         layout.addWidget(quantity_label)
 
         self.quantity_input = QSpinBox()
