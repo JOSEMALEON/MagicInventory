@@ -1,9 +1,8 @@
 from api.scryfall_api import search_card_by_name
+from database.database_manager import create_database, add_card, get_all_cards
 
 
-def main():
-
-    print("Magic Inventory started")
+def search_card():
 
     card_name = input("Enter card name: ")
 
@@ -14,8 +13,56 @@ def main():
         print("\nCard found:")
         print(card)
 
+        save = input("\nSave card to collection? (y/n): ")
+
+        if save.lower() == "y":
+
+            add_card(card)
+            print("Card saved!")
+
     else:
         print("Card not found")
+
+
+def show_collection():
+
+    cards = get_all_cards()
+
+    if not cards:
+        print("\nCollection is empty\n")
+        return
+
+    print("\nYour Collection:\n")
+
+    for card in cards:
+        print(card)
+
+
+def main():
+
+    create_database()
+
+    while True:
+
+        print("\nMagic Inventory\n")
+        print("1 - Search card")
+        print("2 - Show collection")
+        print("3 - Exit")
+
+        option = input("\nSelect option: ")
+
+        if option == "1":
+            search_card()
+
+        elif option == "2":
+            show_collection()
+
+        elif option == "3":
+            print("Goodbye!")
+            break
+
+        else:
+            print("Invalid option")
 
 
 if __name__ == "__main__":
