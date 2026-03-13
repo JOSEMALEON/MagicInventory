@@ -34,18 +34,41 @@ def add_card(card):
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
 
+    # Buscar si la carta ya existe
     cursor.execute("""
-    INSERT INTO cards (name, set_name, type_line, mana_cost, rarity, image_url, quantity)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        card.name,
-        card.set_name,
-        card.type_line,
-        card.mana_cost,
-        card.rarity,
-        card.image_url,
-        card.quantity
-    ))
+    SELECT id, quantity FROM cards
+    WHERE LOWER(name) = LOWER(?)
+    """, (card.name,))
+
+    result = cursor.fetchone()
+
+    if result:
+
+        card_id = result[0]
+        current_quantity = result[1]
+
+        new_quantity = current_quantity + card.quantity
+
+        cursor.execute("""
+        UPDATE cards
+        SET quantity = ?
+        WHERE id = ?
+        """, (new_quantity, card_id))
+
+    else:
+
+        cursor.execute("""
+        INSERT INTO cards (name, set_name, type_line, mana_cost, rarity, image_url, quantity)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            card.name,
+            card.set_name,
+            card.type_line,
+            card.mana_cost,
+            card.rarity,
+            card.image_url,
+            card.quantity
+        ))
 
     conn.commit()
     conn.close()
