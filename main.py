@@ -17,7 +17,16 @@ def search_card():
 
         if save.lower() == "y":
 
+            try:
+                quantity = int(input("Enter quantity: "))
+            except ValueError:
+                print("Invalid quantity. Using quantity = 1")
+                quantity = 1
+
+            card.quantity = quantity
+
             add_card(card)
+
             print("Card saved!")
 
     else:

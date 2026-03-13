@@ -20,7 +20,8 @@ def create_database():
         type_line TEXT,
         mana_cost TEXT,
         rarity TEXT,
-        image_url TEXT
+        image_url TEXT,
+        quantity INTEGER
     )
     """)
 
@@ -29,23 +30,21 @@ def create_database():
 
 
 def add_card(card):
-    """
-    Save a card in the database
-    """
 
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
 
     cursor.execute("""
-    INSERT INTO cards (name, set_name, type_line, mana_cost, rarity, image_url)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO cards (name, set_name, type_line, mana_cost, rarity, image_url, quantity)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (
         card.name,
         card.set_name,
         card.type_line,
         card.mana_cost,
         card.rarity,
-        card.image_url
+        card.image_url,
+        card.quantity
     ))
 
     conn.commit()
@@ -54,13 +53,16 @@ def add_card(card):
 
 def get_all_cards():
     """
-    Return all cards as Card objects
+    Return all cards from the database as Card objects
     """
 
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
 
-    cursor.execute("SELECT name, set_name, type_line, mana_cost, rarity, image_url FROM cards")
+    cursor.execute("""
+    SELECT name, set_name, type_line, mana_cost, rarity, image_url, quantity
+    FROM cards
+    """)
 
     rows = cursor.fetchall()
 
@@ -76,7 +78,8 @@ def get_all_cards():
             type_line=row[2],
             mana_cost=row[3],
             rarity=row[4],
-            image_url=row[5]
+            image_url=row[5],
+            quantity=row[6]
         )
 
         cards.append(card)
