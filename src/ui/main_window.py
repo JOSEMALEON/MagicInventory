@@ -1,5 +1,4 @@
 from PySide6.QtWidgets import (
-    QApplication,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -9,15 +8,14 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QSpinBox,
     QTableWidget,
-    QTableWidgetItem
+    QTableWidgetItem,
+    QGroupBox
 )
 
 from PySide6.QtGui import QPixmap
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QGroupBox
 
 import requests
-import sys
 
 from api.scryfall_api import search_card_by_name
 from database.database_manager import add_card, get_all_cards, create_database
@@ -28,33 +26,83 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
 
-        # Crear base de datos si no existe
         create_database()
 
         self.setWindowTitle("Magic Inventory")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(1000, 700)
 
-        layout = QVBoxLayout()
-        layout.setSpacing(0)
-        layout.setContentsMargins(0, 0, 0, 0)
+        # =============================
+        # MAIN LAYOUT
+        # =============================
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # =============================
+        # TOP BAR
+        # =============================
+
+        top_bar = QWidget()
+        top_layout = QHBoxLayout()
+        top_layout.setContentsMargins(15, 10, 15, 10)
 
         title = QLabel("Magic Inventory")
-        layout.addWidget(title)
+        title.setObjectName("appTitle")
 
-        # Campo de búsqueda
+        top_layout.addWidget(title)
+        top_layout.addStretch()
+
+        top_bar.setLayout(top_layout)
+
+        main_layout.addWidget(top_bar)
+
+        # =============================
+        # DASHBOARD LAYOUT
+        # =============================
+
+        dashboard_layout = QHBoxLayout()
+        dashboard_layout.setContentsMargins(15, 15, 15, 15)
+        dashboard_layout.setSpacing(20)
+
+        # =============================
+        # SIDEBAR
+        # =============================
+
+        sidebar_layout = QVBoxLayout()
+
+        search_nav = QPushButton("Search")
+        collection_nav = QPushButton("Collection")
+
+        sidebar_layout.addWidget(search_nav)
+        sidebar_layout.addWidget(collection_nav)
+        sidebar_layout.addStretch()
+
+        sidebar_widget = QWidget()
+        sidebar_widget.setLayout(sidebar_layout)
+        sidebar_widget.setFixedWidth(140)
+
+        dashboard_layout.addWidget(sidebar_widget)
+
+        # =============================
+        # CARD PANEL
+        # =============================
+
+        card_panel = QVBoxLayout()
+        card_panel.setSpacing(10)
+
+        # Search
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Enter card name")
-        layout.addWidget(self.search_input)
 
-        # Botón buscar
         search_button = QPushButton("Search Card")
         search_button.clicked.connect(self.search_card)
-        layout.addWidget(search_button)
 
-        # Layout horizontal para imagen + información
+        card_panel.addWidget(self.search_input)
+        card_panel.addWidget(search_button)
+
+        # Card info
         card_group = QGroupBox("Card Information")
-        card_group.setStyleSheet("border: none;")
-
         card_layout = QHBoxLayout()
 
         self.card_image = QLabel()
@@ -68,29 +116,43 @@ class MainWindow(QWidget):
 
         card_group.setLayout(card_layout)
 
-        layout.addWidget(card_group)
+        card_panel.addWidget(card_group)
 
-        # Selector de cantidad
+        # Quantity
         quantity_label = QLabel("Quantity")
-        quantity_label.setStyleSheet("border: none;")
-        layout.addWidget(quantity_label)
 
         self.quantity_input = QSpinBox()
         self.quantity_input.setMinimum(1)
         self.quantity_input.setMaximum(100)
-        layout.addWidget(self.quantity_input)
 
-        # Botón guardar
+        card_panel.addWidget(quantity_label)
+        card_panel.addWidget(self.quantity_input)
+
+        # Add button
         save_button = QPushButton("Add to Collection")
         save_button.clicked.connect(self.save_card)
-        layout.addWidget(save_button)
 
-        # Botón mostrar colección
+        card_panel.addWidget(save_button)
+        card_panel.addStretch()
+
+        card_panel_widget = QWidget()
+        card_panel_widget.setLayout(card_panel)
+        card_panel_widget.setFixedWidth(360)
+
+        dashboard_layout.addWidget(card_panel_widget)
+
+        # =============================
+        # COLLECTION PANEL
+        # =============================
+
+        collection_panel = QVBoxLayout()
+        collection_panel.setSpacing(10)
+
         collection_button = QPushButton("Show Collection")
         collection_button.clicked.connect(self.show_collection)
-        layout.addWidget(collection_button)
 
-        # Tabla colección
+        collection_panel.addWidget(collection_button)
+
         self.collection_table = QTableWidget()
         self.collection_table.setColumnCount(4)
         self.collection_table.setHorizontalHeaderLabels(
@@ -99,21 +161,28 @@ class MainWindow(QWidget):
 
         self.collection_table.setColumnWidth(0, 120)
         self.collection_table.verticalHeader().setDefaultSectionSize(150)
-
-        self.collection_table.setMinimumHeight(300)
         self.collection_table.horizontalHeader().setStretchLastSection(True)
 
-        layout.addWidget(self.collection_table)
+        collection_panel.addWidget(self.collection_table)
 
-        # Botón salir
-        exit_button = QPushButton("Exit")
-        exit_button.clicked.connect(self.close)
-        layout.addWidget(exit_button)
+        collection_panel_widget = QWidget()
+        collection_panel_widget.setLayout(collection_panel)
 
-        self.setLayout(layout)
+        dashboard_layout.addWidget(collection_panel_widget)
+
+        # =============================
+        # ADD DASHBOARD
+        # =============================
+
+        main_layout.addLayout(dashboard_layout)
+
+        self.setLayout(main_layout)
 
         self.current_card = None
 
+    # ==================================
+    # SEARCH CARD
+    # ==================================
 
     def search_card(self):
 
@@ -129,7 +198,6 @@ class MainWindow(QWidget):
 
             self.current_card = card
 
-            # Mostrar imagen
             try:
                 response = requests.get(card.image_url)
 
@@ -156,6 +224,9 @@ Rarity: {card.rarity}
         else:
             self.result_area.setText("Card not found")
 
+    # ==================================
+    # SAVE CARD
+    # ==================================
 
     def save_card(self):
 
@@ -171,13 +242,16 @@ Rarity: {card.rarity}
 
         self.result_area.append("\nCard added to collection!")
 
+        # Actualizar tabla automáticamente
+        self.show_collection()
+
+    # ==================================
+    # SHOW COLLECTION
+    # ==================================
 
     def show_collection(self):
 
         cards = get_all_cards()
-
-        # limpiar imagen de búsqueda
-        self.card_image.clear()
 
         if not cards:
             self.collection_table.setRowCount(0)
@@ -187,7 +261,6 @@ Rarity: {card.rarity}
 
         for row, card in enumerate(cards):
 
-            # Imagen
             try:
                 response = requests.get(card.image_url)
 
@@ -210,27 +283,14 @@ Rarity: {card.rarity}
             except Exception:
                 pass
 
-            # Nombre
             self.collection_table.setItem(
                 row, 1, QTableWidgetItem(card.name)
             )
 
-            # Set
             self.collection_table.setItem(
                 row, 2, QTableWidgetItem(card.set_name)
             )
 
-            # Quantity
             self.collection_table.setItem(
                 row, 3, QTableWidgetItem(str(card.quantity))
             )
-
-
-def run_app():
-
-    app = QApplication(sys.argv)
-
-    window = MainWindow()
-    window.showMaximized()
-    
-    sys.exit(app.exec())
