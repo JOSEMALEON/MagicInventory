@@ -333,7 +333,7 @@ Decisiones del autor:
 - Los precios de las cartas del mazo son los del momento de añadirlas (aún no se actualizan con
   "Update prices"; pendiente para la fase 2).
 
-### Hecho (símbolos de maná, 10 nov 2026 — commit PENDING)
+### Hecho (símbolos de maná, 10 nov 2026 — commit eeac1ae)
 - Pedido por el autor: costes con los símbolos oficiales en vez de "2 W U R".
 - `/symbology` de Scryfall (84 símbolos: híbridos, phyrexianos, {2/W}, {X}, {S}, {15}...) ->
   `cache/symbols/symbols.json` (símbolo -> archivo) + un .svg por símbolo. Se descargan al arrancar
@@ -343,7 +343,7 @@ Decisiones del autor:
 - Se usa en la columna Mana del mazo (`MANA_ICON_SIZE` 17, QLabel transparente a clics) y en la
   pastilla de coste de Search (`SEARCH_MANA_ICON_SIZE` 20). El texto queda en el tooltip.
 
-### Hecho (orden del mazo y brackets, 10 nov 2026 — commit PENDING)
+### Hecho (orden del mazo y brackets, 10 nov 2026 — commit eeac1ae)
 - Pedido por el autor. **Orden** dentro de cada grupo por tipo: "Sort by" con Mana value ↑/↓,
   Price ↑/↓ (sin precio al final) y Name (`DECK_SORTS`); se guarda en QSettings (`deck_sort`).
   DecksPage recibe `settings` desde MainWindow.
