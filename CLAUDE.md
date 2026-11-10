@@ -102,7 +102,7 @@ scryfall_id, set_code, collector_number`.
 - Buscar desde la barra superior lleva siempre a la página Search.
 - El `__init__` de MainWindow se dividió en `_build_top_bar/_sidebar/_search_page/_collection_page`.
 
-### Hecho (rediseño visual, 10 nov 2026 — pendiente de commit)
+### Hecho (rediseño visual, 10 nov 2026 — commit 7591f4f)
 - Tema oscuro moderno elegido por el autor: fondo `#111318`, paneles `#1B1E26`, acento en **degradados
   de azul** (`#2563EB -> #38BDF8`). El autor pidió que el morado `#8B5CF6` se use solo en momentos
   puntuales donde mejore el diseño (ahora: degradado del logo ◆ y rareza special/bonus).
@@ -116,7 +116,7 @@ scryfall_id, set_code, collector_number`.
 - Capturas sin ventana para revisar la UI: `QT_QPA_PLATFORM=offscreen` + `QT_QPA_FONTDIR=C:/Windows/Fonts`
   (sin la segunda, el texto sale como cuadrados).
 
-### Hecho (gestión de la colección, 10 nov 2026 — pendiente de commit)
+### Hecho (gestión de la colección, 10 nov 2026 — commit 7591f4f)
 - Tabla con selección múltiple (Ctrl/Mayús), contador "N selected", columnas
   imagen/nombre/edición/rareza (coloreada)/cantidad. Cada fila guarda `card.id` en `Qt.UserRole`
   (columna nombre); `selected_cards()` devuelve las Cards seleccionadas.
