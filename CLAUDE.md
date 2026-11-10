@@ -377,7 +377,7 @@ Decisiones del autor:
   o un comandante. `_clear_preview()` incrementa `_preview_id` para descartar imágenes que aún se
   estén descargando de otro mazo (antes una imagen tardía de otro mazo podía colarse).
 
-### Fase 2 hecha (10 nov 2026 — commit PENDING)
+### Fase 2 hecha (10 nov 2026 — commit 32a6d58)
 - **Precios de mazos al día**: `refresh_prices()` pide en el mismo lote las ediciones de la
   colección y de los mazos (`deck_manager.get_deck_scryfall_ids/update_deck_prices`);
   `deck_cards.prices_updated_at` (migración). Al arrancar se actualiza si la colección **o** los
