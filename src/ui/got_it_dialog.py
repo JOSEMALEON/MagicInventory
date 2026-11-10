@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from services.card_service import get_printings
+from services.collection_service import get_collections
 from services.image_service import load_card_image, to_pixmap
 from src.ui.widgets import printing_text, set_status
 
@@ -105,6 +106,20 @@ class GotItDialog(QDialog):
         details.addSpacing(10)
         details.addWidget(quantity_label)
         details.addLayout(quantity_row)
+
+        # Collection the bought copies go to (wishlists last: you own them now)
+        collection_label = QLabel("ADD TO")
+        collection_label.setObjectName("fieldLabel")
+
+        self.collection_input = QComboBox()
+        owned_first = sorted(get_collections(), key=lambda c: (c.kind == "wishlist", c.id))
+        for collection in owned_first:
+            star = " ★" if collection.kind == "wishlist" else ""
+            self.collection_input.addItem(f"{collection.name}{star}", collection.id)
+
+        details.addSpacing(6)
+        details.addWidget(collection_label)
+        details.addWidget(self.collection_input)
         details.addSpacing(6)
         details.addWidget(edition_label)
         details.addWidget(self.edition_input)
@@ -135,6 +150,10 @@ class GotItDialog(QDialog):
     @property
     def foil(self):
         return self.foil_input.isChecked()
+
+    @property
+    def collection_id(self):
+        return self.collection_input.currentData()
 
     def _update_foil_input(self):
         """Disabled when the chosen edition has no foil; locked if only foil."""

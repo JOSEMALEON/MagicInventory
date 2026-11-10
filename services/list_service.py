@@ -415,9 +415,10 @@ def resolve_entries(entries):
     return found, problems
 
 
-def add_found_cards(found):
+def add_found_cards(found, collection_id=None):
     """
-    Add the resolved cards to the collection. Return how many copies were added.
+    Add the resolved cards to a collection (None = the first one, "Main
+    collection"). Return how many copies were added.
     """
 
     copies = 0
@@ -425,6 +426,7 @@ def add_found_cards(found):
     for entry, card in found:
         card.quantity = entry.quantity
         card.foil = entry.foil
+        card.collection_id = collection_id
         add_card(card)
         copies += entry.quantity
 
@@ -538,14 +540,19 @@ def collection_as_text(cards):
     return "\n".join(card_line(card, card.quantity) for card in cards) + "\n"
 
 
-def collection_as_csv(cards):
+def collection_as_csv(cards, collection_names=None):
+    """
+    collection_names ({id: name}) adds a "Collection" column (used when
+    exporting several collections at once).
+    """
 
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
-    writer.writerow(CSV_HEADER)
+    writer.writerow((["Collection"] if collection_names else []) + CSV_HEADER)
 
     for card in cards:
-        writer.writerow([
+        prefix = [collection_names.get(card.collection_id, "")] if collection_names else []
+        writer.writerow(prefix + [
             card.quantity,
             card.name,
             card.set_name or "",
@@ -563,18 +570,19 @@ def collection_as_csv(cards):
     return output.getvalue()
 
 
-def export_collection(path):
+def export_collection(path, collection_ids=None, collection_names=None):
     """
-    Save the whole collection to path. The format depends on the extension:
-    .csv -> spreadsheet with prices, anything else -> text list.
-    Return the number of printings exported.
+    Save cards to path: every collection (None) or these collection ids.
+    The format depends on the extension: .csv -> spreadsheet with prices
+    (with a "Collection" column if collection_names is given), anything
+    else -> text list. Return the number of printings exported.
     """
 
-    cards = get_all_cards()
+    cards = get_all_cards(collection_ids)
 
     if str(path).lower().endswith(".csv"):
         # utf-8-sig: Excel needs the BOM to show accents correctly
-        content, encoding = collection_as_csv(cards), "utf-8-sig"
+        content, encoding = collection_as_csv(cards, collection_names), "utf-8-sig"
     else:
         content, encoding = collection_as_text(cards), "utf-8"
 

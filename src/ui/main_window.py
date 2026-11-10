@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QCheckBox,
+    QInputDialog,
 )
 
 from datetime import date
@@ -62,6 +63,8 @@ from src.ui.import_page import ImportPage
 from src.ui.decks_page import DecksPage
 from src.ui.life_page import LifePage
 from src.ui.add_to_deck_dialog import AddToDeckDialog
+from src.ui.collection_filters import CollectionFilters
+from services import collection_service as collections
 from services.deck_service import (
     SECTION_LABELS,
     add_collection_cards_to_deck,
@@ -87,7 +90,7 @@ THUMB_WIDTH = 90
 THUMB_HEIGHT = 126
 
 # Collection table columns
-COL_IMAGE, COL_NAME, COL_EDITION, COL_RARITY, COL_FOIL, COL_PRICE, COL_QUANTITY, COL_VALUE = range(8)
+COL_IMAGE, COL_NAME, COL_EDITION, COL_RARITY, COL_FOIL, COL_PRICE, COL_QUANTITY, COL_VALUE, COL_COLLECTION = range(9)
 
 CURRENCIES = ["EUR", "USD"]
 
@@ -176,7 +179,13 @@ class MainWindow(QWidget):
         # Cards of the collection (from the database) and their thumbnails,
         # kept in memory so filtering/sorting never reloads anything
         self.collection_cards = []
+        self.all_cards = []
         self._thumbnails = {}
+
+        # Named collections (filled by refresh_collections)
+        self.collections_list = []
+        self.collection_names = {}
+        self.shown_collection_id = None
 
         # Preferences that survive between sessions (stored by Qt in the
         # Windows registry): currency and collection sort order
@@ -245,6 +254,13 @@ class MainWindow(QWidget):
 
         self.show_page(self.search_page)
         self._show_empty_card()
+
+        # Named collections: restore the one shown last time (0 = all)
+        saved_view = self.settings.value("shown_collection_id", 0)
+        try:
+            self.shown_collection_id = int(saved_view) or None
+        except (TypeError, ValueError):
+            self.shown_collection_id = None
 
         # Load the saved collection as soon as the app opens
         self.show_collection()
@@ -419,6 +435,14 @@ class MainWindow(QWidget):
         add_row.addWidget(self.foil_input)
         add_row.addWidget(self.save_button, 1)
 
+        # Collection the cards are added to (remembered)
+        target_label = QLabel("ADD TO")
+        target_label.setObjectName("fieldLabel")
+
+        self.add_target_input = QComboBox()
+        self.add_target_input.setToolTip("Collection where “Add to Collection” puts the cards")
+        self.add_target_input.currentIndexChanged.connect(self._on_add_target_changed)
+
         # Feedback line: searching, not found, added...
         self.status_label = QLabel()
         self.status_label.setObjectName("statusLabel")
@@ -438,6 +462,9 @@ class MainWindow(QWidget):
         details.addSpacing(10)
         details.addWidget(quantity_label)
         details.addLayout(add_row)
+        details.addSpacing(6)
+        details.addWidget(target_label)
+        details.addWidget(self.add_target_input)
         details.addSpacing(10)
         details.addWidget(self.status_label)
         details.addStretch()
@@ -496,6 +523,7 @@ class MainWindow(QWidget):
 
         value_caption = QLabel("COLLECTION VALUE")
         value_caption.setObjectName("fieldLabel")
+        self.value_caption = value_caption
 
         # "€23.87"
         self.value_label = QLabel()
@@ -537,9 +565,31 @@ class MainWindow(QWidget):
         self.export_button.setToolTip("Save the whole collection as a .csv spreadsheet or a .txt list")
         self.export_button.clicked.connect(self.export_collection)
 
+        # Which collection is shown: "All collections" or one of them
+        self.collection_selector = QComboBox()
+        self.collection_selector.setObjectName("collectionSelector")
+        self.collection_selector.setMinimumWidth(220)
+        self.collection_selector.setToolTip("Collection shown in the table")
+        self.collection_selector.currentIndexChanged.connect(self._on_collection_selected)
+
+        manage_button = QPushButton("Manage ▾")
+        manage_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        manage_menu = QMenu(manage_button)
+        manage_menu.addAction("New collection…", self.new_collection)
+        self.rename_collection_action = manage_menu.addAction("Rename…", self.rename_collection)
+        self.wishlist_action = manage_menu.addAction("Use as wishlist", self.toggle_wishlist)
+        self.wishlist_action.setCheckable(True)
+        manage_menu.addSeparator()
+        self.delete_collection_action = manage_menu.addAction("Delete collection…", self.delete_collection)
+        manage_button.setMenu(manage_menu)
+        self.manage_button = manage_button
+
         title_box = QHBoxLayout()
-        title_box.setSpacing(14)
+        title_box.setSpacing(12)
         title_box.addWidget(collection_title)
+        title_box.addWidget(self.collection_selector)
+        title_box.addWidget(manage_button)
+        title_box.addSpacing(6)
         title_box.addWidget(self.collection_summary)
 
         header_layout.addLayout(title_box)
@@ -573,6 +623,23 @@ class MainWindow(QWidget):
 
         self.sort_input.currentIndexChanged.connect(self._on_sort_changed)
 
+        # Field filters (rarity, color, type...), shown with the "Filters" button
+        self.filters = CollectionFilters()
+        self.filters.hide()
+        self.filters.changed.connect(self._apply_filter)
+
+        self.filters_button = QPushButton("Filters")
+        self.filters_button.setObjectName("filtersButton")
+        self.filters_button.setCheckable(True)
+        self.filters_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.filters_button.toggled.connect(self.filters.setVisible)
+        self.filters_button.setMinimumWidth(110)
+
+        self.move_button = QPushButton("Move to…")
+        self.move_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.move_button.setToolTip("Move the selected cards to another collection")
+        self.move_button.clicked.connect(self._show_move_menu)
+
         self.selection_label = QLabel()
         self.selection_label.setObjectName("mutedLabel")
 
@@ -594,10 +661,13 @@ class MainWindow(QWidget):
         toolbar.setSpacing(10)
         toolbar.addWidget(self.filter_input)
         toolbar.addSpacing(6)
+        toolbar.addWidget(self.filters_button)
+        toolbar.addSpacing(6)
         toolbar.addWidget(sort_label)
         toolbar.addWidget(self.sort_input)
         toolbar.addStretch()
         toolbar.addWidget(self.selection_label)
+        toolbar.addWidget(self.move_button)
         toolbar.addWidget(self.add_to_deck_button)
         toolbar.addWidget(self.change_edition_button)
         toolbar.addWidget(self.delete_button)
@@ -607,8 +677,10 @@ class MainWindow(QWidget):
         table = QTableWidget()
         self.collection_table = table
         table.setObjectName("collectionTable")
-        table.setColumnCount(8)
-        table.setHorizontalHeaderLabels(["", "Name", "Edition", "Rarity", "Foil", "Price", "Qty", "Value"])
+        table.setColumnCount(9)
+        table.setHorizontalHeaderLabels(
+            ["", "Name", "Edition", "Rarity", "Foil", "Price", "Qty", "Value", "Collection"]
+        )
 
         table.setShowGrid(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -633,6 +705,9 @@ class MainWindow(QWidget):
         table.setColumnWidth(COL_PRICE, 130)
         table.setColumnWidth(COL_QUANTITY, 110)
         table.setColumnWidth(COL_VALUE, 110)
+        # Only shown in "All collections"
+        header.setSectionResizeMode(COL_COLLECTION, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(COL_COLLECTION, 150)
 
         table.itemSelectionChanged.connect(self._update_selection_actions)
         table.cellDoubleClicked.connect(lambda row, column: self.change_selected_edition())
@@ -653,6 +728,7 @@ class MainWindow(QWidget):
         page_layout.setSpacing(14)
         page_layout.addLayout(header_layout)
         page_layout.addLayout(toolbar)
+        page_layout.addWidget(self.filters)
         page_layout.addWidget(table)
         page_layout.addWidget(self.collection_status)
 
@@ -969,13 +1045,15 @@ class MainWindow(QWidget):
         quantity = self.quantity_input.value()
         self.current_card.quantity = quantity
         self.current_card.foil = self.foil_input.isChecked()
+        self.current_card.collection_id = self.add_target_input.currentData()
 
         save_card(self.current_card)
 
         finish = " foil" if self.current_card.foil else ""
+        target = self.collection_names.get(self.current_card.collection_id, "your collection")
         self._set_status(
             f"Added {quantity} ×{finish} {self.current_card.name} "
-            f"({self.current_card.printing_label}) to your collection.",
+            f"({self.current_card.printing_label}) to “{target}”.",
             "success",
         )
         self.show_collection()
@@ -1026,8 +1104,22 @@ class MainWindow(QWidget):
         Reload the collection from the database and redraw the table.
         """
 
-        self.collection_cards = get_collection()
+        # Collections and their counts may have changed (cards added/moved)
+        self.refresh_collections()
+
+        # Cards of the chosen collection (None = all); the search page's
+        # "already in your collection" needs all of them
+        self.all_cards = get_collection()
+        if self.shown_collection_id is None:
+            self.collection_cards = self.all_cards
+        else:
+            self.collection_cards = [
+                card for card in self.all_cards if card.collection_id == self.shown_collection_id
+            ]
         self.price_changes = get_price_changes(self.currency)
+
+        self.filters.set_editions(card.set_name for card in self.collection_cards)
+        self.collection_table.setColumnHidden(COL_COLLECTION, self.shown_collection_id is not None)
 
         self._update_collection_summary()
         self._update_prices_date()
@@ -1046,6 +1138,19 @@ class MainWindow(QWidget):
         self.collection_summary.setText(
             f"{plural(len(cards), 'printing')} · {plural(total, 'card')}"
         )
+
+        # The value counts the cards you own: in "All collections" wishlists
+        # are left out; a wishlist on its own shows what it would cost
+        wishlist_ids = {c.id for c in self.collections_list if c.kind == "wishlist"}
+        shown = next((c for c in self.collections_list if c.id == self.shown_collection_id), None)
+
+        if shown is not None and shown.kind == "wishlist":
+            self.value_caption.setText("WISHLIST COST")
+        elif self.shown_collection_id is None and wishlist_ids:
+            self.value_caption.setText("COLLECTION VALUE  (WITHOUT WISHLISTS)")
+            cards = [card for card in cards if card.collection_id not in wishlist_ids]
+        else:
+            self.value_caption.setText("COLLECTION VALUE")
 
         priced = [card for card in cards if card.price(currency) is not None]
         unpriced = [card for card in cards if card.price(currency) is None]
@@ -1149,6 +1254,9 @@ class MainWindow(QWidget):
             table.setItem(row, COL_PRICE, self._price_item(card))
             table.setCellWidget(row, COL_QUANTITY, self._quantity_cell(card))
             table.setItem(row, COL_VALUE, value_item)
+            table.setItem(row, COL_COLLECTION, QTableWidgetItem(
+                self.collection_names.get(card.collection_id, "")
+            ))
 
             self._set_thumbnail(collection_id, row, card.image_url)
 
@@ -1301,10 +1409,17 @@ class MainWindow(QWidget):
     def _apply_filter(self):
         """
         Hide the rows that don't contain the filter text in their name,
-        edition, type or rarity. Nothing is reloaded.
+        edition, type or rarity, or don't pass the field filters (rarity,
+        color, type...). Nothing is reloaded.
         """
 
         words = self.filter_input.text().lower().split()
+        active_filters = self.filters.active_count()
+
+        self.filters_button.setText(f"Filters ({active_filters})" if active_filters else "Filters")
+        self.filters_button.setProperty("active", bool(active_filters))
+        self.filters_button.style().unpolish(self.filters_button)
+        self.filters_button.style().polish(self.filters_button)
         cards_by_id = {card.id: card for card in self.collection_cards}
 
         # Hidden rows must not stay selected (they could be deleted by mistake)
@@ -1322,10 +1437,13 @@ class MainWindow(QWidget):
                 text = " ".join(field for field in fields if field).lower()
 
             matches = all(word in text for word in words)
+            if matches and card and active_filters:
+                matches = self.filters.matches(card, self.currency)
+
             self.collection_table.setRowHidden(row, not matches)
             visible += matches
 
-        if words:
+        if words or active_filters:
             self._set_collection_status(
                 f"Showing {visible} of {plural(len(self.collection_cards), 'printing')}."
             )
@@ -1362,6 +1480,233 @@ class MainWindow(QWidget):
         # Changing the edition only makes sense for one card at a time
         self.change_edition_button.setEnabled(len(selected) == 1)
         self.add_to_deck_button.setEnabled(bool(selected))
+        self.move_button.setEnabled(bool(selected) and len(self.collections_list) > 1)
+
+    # ==================================
+    # COLLECTIONS
+    # ==================================
+
+    def refresh_collections(self, select_id="keep"):
+        """
+        Reload the list of collections into every selector (collection
+        page, search page, import page). select_id: collection to show in
+        the table ("keep" = the current one, None = all).
+        """
+
+        self.collections_list = collections.get_collections()
+        self.collection_names = {c.id: c.name for c in self.collections_list}
+
+        if select_id == "keep":
+            select_id = self.shown_collection_id
+        if select_id is not None and select_id not in self.collection_names:
+            select_id = None
+
+        selector = self.collection_selector
+        selector.blockSignals(True)
+        selector.clear()
+        total = sum(c.copies for c in self.collections_list)
+        selector.addItem(f"All collections  ({total})", None)
+        for collection in self.collections_list:
+            selector.addItem(collections.collection_label(collection), collection.id)
+        selector.setCurrentIndex(max(0, selector.findData(select_id)))
+        selector.blockSignals(False)
+
+        self.shown_collection_id = select_id
+        self._update_manage_actions()
+
+        # "Add to:" selectors of the search and import pages
+        self._fill_target_selector(self.add_target_input)
+        self.import_page.set_collections(self.collections_list, self._default_target())
+
+    def _default_target(self):
+        """
+        Where new cards go: the last collection chosen, else the first one.
+        """
+
+        saved = self.settings.value("add_collection_id", None)
+        try:
+            saved = int(saved) if saved is not None else None
+        except (TypeError, ValueError):
+            saved = None
+
+        if saved in self.collection_names:
+            return saved
+        return self.collections_list[0].id if self.collections_list else None
+
+    def _fill_target_selector(self, combo):
+
+        combo.blockSignals(True)
+        combo.clear()
+        for collection in self.collections_list:
+            star = " ★" if collection.kind == "wishlist" else ""
+            combo.addItem(f"{collection.name}{star}", collection.id)
+        combo.setCurrentIndex(max(0, combo.findData(self._default_target())))
+        combo.blockSignals(False)
+
+    def _on_add_target_changed(self):
+        self.settings.setValue("add_collection_id", self.add_target_input.currentData())
+
+    def _on_collection_selected(self):
+
+        self.shown_collection_id = self.collection_selector.currentData()
+        self.settings.setValue("shown_collection_id", self.shown_collection_id or 0)
+        self._update_manage_actions()
+        self.show_collection()
+
+    def _update_manage_actions(self):
+        """Rename / wishlist / delete only make sense for one collection."""
+
+        collection = next(
+            (c for c in self.collections_list if c.id == self.shown_collection_id), None
+        )
+        one = collection is not None
+
+        self.rename_collection_action.setEnabled(one)
+        self.wishlist_action.setEnabled(one)
+        self.wishlist_action.setChecked(bool(one and collection.kind == "wishlist"))
+        self.delete_collection_action.setEnabled(one and len(self.collections_list) > 1)
+
+    def new_collection(self):
+
+        name, ok = QInputDialog.getText(self, "New collection", "Name of the new collection:")
+        if not ok or not name.strip():
+            return
+
+        collection_id = collections.create_collection(name)
+        self.refresh_collections(select_id=collection_id)
+        self.show_collection()
+        self._set_collection_status(f"Collection “{name.strip()}” created.", "success")
+
+    def rename_collection(self):
+
+        collection_id = self.shown_collection_id
+        if collection_id is None:
+            return
+
+        name, ok = QInputDialog.getText(
+            self, "Rename collection", "New name:", text=self.collection_names[collection_id]
+        )
+        if ok and name.strip():
+            collections.rename_collection(collection_id, name)
+            self.refresh_collections()
+            self.show_collection()
+
+    def toggle_wishlist(self):
+        """A wishlist holds cards you want: they don't count as owned."""
+
+        collection_id = self.shown_collection_id
+        if collection_id is None:
+            return
+
+        kind = "wishlist" if self.wishlist_action.isChecked() else "normal"
+        collections.set_collection_kind(collection_id, kind)
+        self.refresh_collections()
+        self.show_collection()
+
+        name = self.collection_names[collection_id]
+        if kind == "wishlist":
+            text = f"“{name}” is now a wishlist: its cards don't count as owned in your decks."
+        else:
+            text = f"“{name}” is a normal collection again: its cards count as owned."
+        self._set_collection_status(text, "success")
+
+    def delete_collection(self):
+
+        collection_id = self.shown_collection_id
+        if collection_id is None or len(self.collections_list) <= 1:
+            return
+
+        collection = next(c for c in self.collections_list if c.id == collection_id)
+        others = [c for c in self.collections_list if c.id != collection_id]
+
+        if collection.copies:
+            # Ask where the cards go: another collection, or nowhere
+            options = [f"Move them to “{c.name}”" for c in others] + ["Delete the cards too"]
+            choice, ok = QInputDialog.getItem(
+                self,
+                "Delete collection",
+                f"“{collection.name}” has {plural(collection.copies, 'card')}. What should happen to them?",
+                options,
+                0,
+                False,
+            )
+            if not ok:
+                return
+            index = options.index(choice)
+            move_to = others[index].id if index < len(others) else None
+        else:
+            answer = QMessageBox.question(
+                self, "Delete collection", f"Delete the empty collection “{collection.name}”?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            move_to = None
+
+        collections.delete_collection(collection_id, move_to)
+        self.refresh_collections(select_id=move_to)
+        self.show_collection()
+
+        if move_to is not None:
+            text = f"Collection “{collection.name}” deleted; its cards moved to “{self.collection_names[move_to]}”."
+        else:
+            text = f"Collection “{collection.name}” deleted."
+        self._set_collection_status(text, "success")
+
+    def _show_move_menu(self):
+        menu = self._build_move_menu(self.selected_cards())
+        if menu is not None:
+            menu.exec(self.move_button.mapToGlobal(self.move_button.rect().bottomLeft()))
+
+    def _build_move_menu(self, cards, parent_menu=None):
+        """
+        "Move to" menu with the other collections. A single card with
+        several copies can move only some of them.
+        """
+
+        if not cards:
+            return None
+
+        current = {card.collection_id for card in cards}
+        menu = parent_menu.addMenu("Move to") if parent_menu else QMenu(self)
+
+        for collection in self.collections_list:
+            if current == {collection.id}:
+                continue
+            star = " ★" if collection.kind == "wishlist" else ""
+            action = menu.addAction(f"{collection.name}{star}")
+            action.triggered.connect(
+                lambda checked=False, c=collection: self.move_cards_to(cards, c)
+            )
+
+        if menu.isEmpty():
+            menu.addAction("(no other collections)").setEnabled(False)
+
+        return menu
+
+    def move_cards_to(self, cards, collection):
+
+        quantity = None
+
+        # One row with several copies: how many?
+        if len(cards) == 1 and (cards[0].quantity or 0) > 1:
+            quantity, ok = QInputDialog.getInt(
+                self, "Move cards",
+                f"How many copies of {cards[0].name} go to “{collection.name}”?",
+                cards[0].quantity, 1, cards[0].quantity,
+            )
+            if not ok:
+                return
+
+        collections.move_cards([card.id for card in cards], collection.id, quantity)
+        self.refresh_collections()
+        self.show_collection()
+
+        copies = quantity if quantity is not None else sum(card.quantity or 0 for card in cards)
+        self._set_collection_status(
+            f"Moved {plural(copies, 'card')} to “{collection.name}”.", "success"
+        )
 
     def _show_collection_menu(self, position):
 
@@ -1380,6 +1725,8 @@ class MainWindow(QWidget):
         deck_text = "Add to deck…" if len(selected) == 1 else f"Add {len(selected)} cards to deck…"
         deck_action = menu.addAction(deck_text)
         deck_action.triggered.connect(self.add_selected_to_deck)
+
+        self._build_move_menu(selected, parent_menu=menu)
 
         change_action = menu.addAction("Change edition…")
         change_action.setEnabled(len(selected) == 1)
@@ -1505,8 +1852,15 @@ class MainWindow(QWidget):
             self._set_collection_status("Your collection is empty: nothing to export.", "error")
             return
 
+        # The collection shown is exported ("All collections" = everything)
+        if self.shown_collection_id is None:
+            file_name = "all_collections"
+        else:
+            name = self.collection_names.get(self.shown_collection_id, "collection")
+            file_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in name).strip() or "collection"
+
         last_folder = self.settings.value("export_folder", str(Path.home() / "Documents"))
-        suggested = str(Path(last_folder) / f"magic_collection_{date.today():%Y-%m-%d}.csv")
+        suggested = str(Path(last_folder) / f"{file_name}_{date.today():%Y-%m-%d}.csv")
 
         path, chosen_filter = QFileDialog.getSaveFileName(
             self,
@@ -1524,8 +1878,14 @@ class MainWindow(QWidget):
         if path.suffix.lower() != extension:
             path = path.with_suffix(extension)
 
+        if self.shown_collection_id is None:
+            # Several collections: the CSV gets a "Collection" column
+            ids, names = None, self.collection_names
+        else:
+            ids, names = [self.shown_collection_id], None
+
         try:
-            count = save_collection_file(path)
+            count = save_collection_file(path, ids, names)
         except OSError as error:
             self._set_collection_status(f"Could not save the file: {error}", "error")
             return
@@ -1675,19 +2035,32 @@ class MainWindow(QWidget):
             return
 
         name = (card.name or "").lower()
-        same_name = [c for c in self.collection_cards if (c.name or "").lower() == name]
+        wishlists = {c.id for c in self.collections_list if c.kind == "wishlist"}
 
-        total = sum(c.quantity or 0 for c in same_name)
+        # Every collection counts (not only the one shown), except wishlists
+        same_name = [c for c in self.all_cards if (c.name or "").lower() == name]
+        owned = [c for c in same_name if c.collection_id not in wishlists]
+        wished = sum(c.quantity or 0 for c in same_name if c.collection_id in wishlists)
+
+        total = sum(c.quantity or 0 for c in owned)
         edition_rows = [
-            c for c in same_name if card.scryfall_id and c.scryfall_id == card.scryfall_id
+            c for c in owned if card.scryfall_id and c.scryfall_id == card.scryfall_id
         ]
         this_edition = sum(c.quantity or 0 for c in edition_rows)
         foil_copies = sum(c.quantity or 0 for c in edition_rows if c.foil)
 
         if total == 0:
-            self.owned_label.setText("Not in your collection yet")
+            text = "Not in your collection yet"
         else:
             foil_text = f" ({foil_copies} foil)" if foil_copies else ""
-            self.owned_label.setText(
-                f"In your collection: {this_edition} of this edition{foil_text} · {total} in total"
-            )
+            text = f"In your collection: {this_edition} of this edition{foil_text} · {total} in total"
+
+        # Which collections hold it, when there are several
+        holders = sorted({self.collection_names.get(c.collection_id, "") for c in owned})
+        if len(self.collections_list) > 1 and holders:
+            text += "  ·  in " + ", ".join(holders)
+
+        if wished:
+            text += f"  ·  ★ {wished} on your wishlist"
+
+        self.owned_label.setText(text)

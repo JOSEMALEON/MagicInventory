@@ -31,6 +31,8 @@ src/ui/add_to_deck_dialog.py -> AddToDeckDialog: añadir cartas de la colección
 src/ui/deck_visual.py        -> DeckVisualView / CardTile: vista visual del mazo con miniaturas
 src/ui/flow_layout.py        -> FlowLayout: coloca widgets en filas que se ajustan al ancho
 src/ui/life_page.py          -> LifePage (contador de vidas), PlayerPanel (un jugador), PlayerSetupDialog
+src/ui/collection_filters.py -> CollectionFilters: filtros por campo de la colección
+services/collection_service.py -> colecciones con nombre (fachada); database/collection_manager.py (SQL)
 src/ui/dice.py               -> DiceDialog / DieWidget: dados d4-d20 dibujados y animados
 services/life_service.py     -> lógica del contador (sin Qt): Game/Player, LifeCounter (cambios + deshacer),
                                 guardado en cache/life_game.json
@@ -75,7 +77,10 @@ Flujo: buscar -> `search_card()` -> Scryfall -> `Card` -> imagen + datos en el p
 
 Tabla `cards`: `id, name, set_name, type_line, mana_cost, rarity, image_url, quantity,
 scryfall_id, set_code, collector_number, price_eur, price_eur_foil, price_usd, price_usd_foil,
-prices_updated_at, foil`.
+prices_updated_at, foil, collection_id`.
+
+Tabla `collections`: `id, name, kind ('normal' | 'wishlist'), created_at`. La primera es
+"Main collection" (la migración mete ahí todas las cartas antiguas).
 
 Tabla `price_history`: `scryfall_id, date, price_eur, price_eur_foil, price_usd, price_usd_foil`
 (clave `scryfall_id + date`: una fila por edición y día; el mismo día se sobrescribe).
@@ -89,10 +94,13 @@ Tabla `price_history`: `scryfall_id, date, price_eur, price_eur_foil, price_usd,
 - Cualquier `Card` que llega de Scryfall y se guarda (`add_card`, `change_printing`) guarda también
   sus precios (`_store_prices`).
 
-- **Una fila = una edición concreta (printing) + acabado (foil o no)**, identificada por
-  `scryfall_id + foil` (índice único parcial `idx_cards_printing_finish`, solo filas con id; sustituye
-  al antiguo `idx_cards_scryfall_id`, que se borra al arrancar).
-- Misma edición y acabado -> se suman cantidades. Otra edición u otro acabado -> fila nueva.
+- **Una fila = colección + edición concreta (printing) + acabado (foil o no)**, identificada por
+  `collection_id + scryfall_id + foil` (índice único parcial `idx_cards_collection_printing`, creado en
+  `collection_manager.ensure_collections`). Los índices anteriores (`idx_cards_scryfall_id`,
+  `idx_cards_printing_finish`) se borran al arrancar y **no deben recrearse**: fallarían en cuanto la
+  misma edición esté en dos colecciones.
+- Misma colección, edición y acabado -> se suman cantidades. Si no, fila nueva. Una `Card` sin
+  `collection_id` va a la primera colección (`_collection_of`).
   `set_foil()` (casilla Foil de la tabla) y `change_printing()` conservan/fusionan por acabado.
 - Listas: `*F*`/`*E*` = foil al importar; al exportar se escribe `*F*`; CSV con columna "Foil".
 - Los mazos no distinguen foil: "tener" una carta se cuenta por nombre (foil o no).
@@ -468,21 +476,51 @@ Decisiones del autor:
 - Ideas pendientes: estadísticas por mazo, contador de turnos y temporizador, historial y gráfico
   de vidas, Planechase/Archenemy, atajos de teclado, ventana aparte.
 
-### Idea futura: varias colecciones con nombre (pedida por el autor, sin implementar)
-- Tabla `collections (id, name, color/icono, notes, created_at)` y `cards.collection_id`
-  (migración: todo a una colección "Main collection"). Selector de colección en la cabecera de
-  Collection y en Search/Import ("Add to: …"); opción "All collections" con totales sumados.
-- Usos típicos: binder de intercambio, cartas en mazos físicos, wishlist, cartas prestadas, cajas
-  por ubicación ("Caja 1", "Carpeta azul"), colección de foils/altered.
-- Mover/copiar cartas entre colecciones (menú contextual, con cantidades parciales); exportar e
-  importar por colección; valor y estadísticas por colección.
-- "Tengo" en los mazos: elegir qué colecciones cuentan (p. ej. excluir la wishlist o el binder de
-  intercambio); "Got it…" pregunta a qué colección añadir.
-- Wishlist especial: no cuenta como "tengo", con precio objetivo y aviso cuando baje el precio.
+## Varias colecciones y filtros (10 nov 2026 — commit PENDING)
+
+### Colecciones con nombre
+- `database/collection_manager.py` (tabla, migración, `move_cards`, `delete_collection`) y
+  `services/collection_service.py` (fachada para la UI).
+- Collection: selector "All collections (N)" / cada colección (★ = wishlist) + "Manage ▾" (New,
+  Rename, Use as wishlist, Delete — al borrar con cartas, `QInputDialog.getItem` pregunta a qué
+  colección moverlas o si borrarlas; la última colección no se puede borrar). La vista elegida se
+  recuerda (`shown_collection_id` en QSettings; 0 = todas).
+- "All collections" muestra la columna `COL_COLLECTION`; el valor excluye las wishlists
+  ("COLLECTION VALUE (WITHOUT WISHLISTS)"); una wishlist sola muestra "WISHLIST COST".
+- "Move to…" (barra + menú contextual): mueve filas a otra colección fusionando; con una sola fila de
+  varias copias pregunta cuántas (`QInputDialog.getInt`).
+- "Add to:" en Search (`add_target_input`, recordado en `add_collection_id`) e Import cards
+  (`ImportPage.set_collections`); "Got it…" elige colección (wishlists al final); "Got all" usa la
+  primera colección que cuenta como "tengo".
+- **Wishlist**: sus cartas no cuentan como "tengo" (`deck_service.collection_counts` usa
+  `owned_collection_ids`); Search muestra "★ N on your wishlist" y en qué colecciones está la carta.
+- `MainWindow.refresh_collections()` rellena todos los selectores; `show_collection()` la llama
+  siempre (los contadores cambian al añadir/mover). `self.all_cards` = todas las colecciones;
+  `self.collection_cards` = las de la vista elegida.
+- Exportar: la colección mostrada; en "All collections" el CSV lleva columna "Collection".
+
+### Filtros por campo (`src/ui/collection_filters.py`)
+- Botón "Filters" (muestra "Filters (N)" con N filtros activos) despliega `CollectionFilters`:
+  rareza y color en fichas (W U B R G, Colorless, Multicolor), tipo, edición (las de la vista),
+  acabado, precio desde/hasta (en la moneda elegida; 0 = sin límite) y copias mínimas.
+- Se combinan con el filtro de texto en `_apply_filter` (ocultan filas, no recargan).
+- Color: de los símbolos del coste de maná (`card_colors`); sin coste de color = Colorless.
+
+### Ideas pendientes de colecciones
+- Wishlist con precio objetivo y aviso cuando baje; copiar (no solo mover) entre colecciones;
+  elegir por mazo qué colecciones cuentan; guardar los filtros entre sesiones.
 
 ## Pendiente
 
-- Roadmap: filtros por campo en la colección, asistente de IA, exportar a JSON.
+- Roadmap: asistente de IA, exportar a JSON.
+- **Contador de vidas — aparcado por decisión del autor (10 nov 2026).** Retomar más adelante con:
+  1. Estadísticas por mazo: guardar cada partida terminada (jugadores, mazos, ganador y forma de
+     victoria: vida, veneno, daño de comandante…) y mostrar victorias/derrotas en la página Decks.
+  2. Contador de turnos con el jugador activo resaltado; temporizador o reloj de ajedrez opcional.
+  3. Historial turno a turno y gráfico de vidas al final de la partida (reutilizar `charts.py`).
+  4. Planechase y Archenemy con las cartas reales de Scryfall (`type:plane`, `type:scheme`).
+  5. Atajos de teclado (1-6 elegir jugador, ↑/↓ vida) y ventana aparte / segundo monitor.
+  6. Versión móvil: paneles girados hacia cada jugador (modo mesa); por ahora no, es app de escritorio.
 - Ideas de mejora: deshacer el último borrado; mostrar colores de rareza también en
   filas seleccionadas; guardar el filtro entre sesiones.
 

@@ -3,6 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (
+    QComboBox,
     QAbstractItemView,
     QFileDialog,
     QHBoxLayout,
@@ -171,6 +172,19 @@ class ImportPage(QWidget):
         self.add_button.setEnabled(False)
         self.add_button.clicked.connect(self.add_cards)
 
+        # Collection the imported cards go to (filled by the main window)
+        target_label = QLabel("ADD TO")
+        target_label.setObjectName("fieldLabel")
+
+        self.target_input = QComboBox()
+        self.target_input.setMinimumWidth(200)
+
+        add_row = QHBoxLayout()
+        add_row.setSpacing(10)
+        add_row.addWidget(target_label)
+        add_row.addWidget(self.target_input)
+        add_row.addWidget(self.add_button, 1)
+
         right = QVBoxLayout()
         right.setContentsMargins(20, 20, 20, 20)
         right.setSpacing(10)
@@ -178,7 +192,7 @@ class ImportPage(QWidget):
         right.addWidget(self.status_label)
         right.addWidget(self.results_table, 1)
         right.addWidget(self.problems_box)
-        right.addWidget(self.add_button)
+        right.addLayout(add_row)
 
         right_panel = styled_panel("cardPanel", right)
 
@@ -399,20 +413,37 @@ class ImportPage(QWidget):
     # ADD
     # ==================================
 
+    def set_collections(self, collection_list, default_id):
+        """Fill the "Add to" selector (called by the main window)."""
+
+        current = self.target_input.currentData()
+
+        self.target_input.blockSignals(True)
+        self.target_input.clear()
+        for collection in collection_list:
+            star = " ★" if collection.kind == "wishlist" else ""
+            self.target_input.addItem(f"{collection.name}{star}", collection.id)
+
+        keep = current if self.target_input.findData(current) >= 0 else default_id
+        self.target_input.setCurrentIndex(max(0, self.target_input.findData(keep)))
+        self.target_input.blockSignals(False)
+
     def add_cards(self):
 
         if not self.found:
             return
 
         found = self.found
-        copies = add_found_cards(found)
+        target = self.target_input.currentData()
+        target_name = self.target_input.currentText().replace(" ★", "")
+        copies = add_found_cards(found, target)
 
         # Avoid adding the same cards twice by clicking again
         self._clear_results()
 
         set_status(
             self.status_label,
-            f"Added {plural(copies, 'card')} ({plural(len(found), 'line')}) to your collection.",
+            f"Added {plural(copies, 'card')} ({plural(len(found), 'line')}) to “{target_name}”.",
             "success",
         )
 

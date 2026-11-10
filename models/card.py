@@ -26,6 +26,7 @@ class Card:
         oracle_text=None,
         foil=False,
         finishes=None,
+        collection_id=None,
     ):
 
         self.name = name
@@ -68,6 +69,9 @@ class Card:
         # Finishes this printing exists in, from Scryfall: ["nonfoil", "foil",
         # "etched"]. Only known for cards that come from Scryfall (not stored).
         self.finishes = finishes or []
+
+        # Collection the row belongs to (None = the first one, "Main collection")
+        self.collection_id = collection_id
 
 
     @property

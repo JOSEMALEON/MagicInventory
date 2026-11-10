@@ -392,10 +392,15 @@ class MissingCard:
 
 
 def collection_counts():
-    """{card name (lowercase): copies in the collection, all editions}."""
+    """
+    {card name (lowercase): copies you own, all editions}. Only collections
+    that count as owned: wishlists are left out.
+    """
+
+    from database.collection_manager import owned_collection_ids
 
     counts = Counter()
-    for card in get_all_cards():
+    for card in get_all_cards(owned_collection_ids()):
         counts[(card.name or "").lower()] += card.quantity or 0
     return counts
 
@@ -433,7 +438,7 @@ def missing_cards(deck_cards, owned=None):
     return sorted(result, key=lambda item: item.name.lower())
 
 
-def add_to_collection(card, quantity, foil=False):
+def add_to_collection(card, quantity, foil=False, collection_id=None):
     """
     Register copies you got of a deck card (a Card from Scryfall or a
     deck line's card): they are added to the collection, foil or not.
@@ -447,6 +452,7 @@ def add_to_collection(card, quantity, foil=False):
         price_eur=card.price_eur, price_eur_foil=card.price_eur_foil,
         price_usd=card.price_usd, price_usd_foil=card.price_usd_foil,
         foil=foil,
+        collection_id=collection_id,
     )
     add_card(copy)
 

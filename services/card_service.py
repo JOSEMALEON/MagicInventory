@@ -45,8 +45,11 @@ def save_card(card):
     add_card(card)
 
 
-def get_collection():
-    return get_all_cards()
+def get_collection(collection_ids=None):
+    """
+    Cards of every collection (None) or of these collection ids.
+    """
+    return get_all_cards(collection_ids)
 
 
 def remove_cards(card_ids):

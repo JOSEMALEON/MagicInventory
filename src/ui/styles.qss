@@ -521,6 +521,56 @@ QLabel#bracketDetails {
 }
 
 /* List / Stats switch */
+/* ---------- Collection filters ---------- */
+
+QWidget#filterPanel {
+    background-color: #1B1E26;
+    border: 1px solid #2C313D;
+    border-radius: 12px;
+}
+
+QPushButton#filterChip {
+    background-color: #111318;
+    color: #8B92A5;
+    border: 1px solid #2C313D;
+    border-radius: 12px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QPushButton#filterChip:hover {
+    background-color: #242833;
+}
+
+QPushButton#filterChip:checked {
+    background-color: #20232C;
+}
+
+/* "Filters (3)": blue when some filter is on */
+QPushButton#filtersButton[active="true"],
+QPushButton#filtersButton:checked {
+    border: 1px solid #3B82F6;
+    color: #93C5FD;
+}
+
+QDoubleSpinBox {
+    background-color: #111318;
+    border: 1px solid #2C313D;
+    border-radius: 8px;
+    padding: 6px 8px;
+}
+
+QComboBox#collectionSelector {
+    font-weight: 600;
+}
+
+/* Buttons with a menu ("Manage ▾") already show their own arrow */
+QPushButton::menu-indicator {
+    image: none;
+    width: 0;
+}
+
 QPushButton#segmentButton {
     background-color: transparent;
     color: #A3A9B8;

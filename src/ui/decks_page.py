@@ -42,6 +42,7 @@ from services.card_service import ScryfallError, get_printings, is_basic_land, s
 from services.image_service import art_crop_url, load_card_image, to_pixmap
 from services.price_service import format_money
 from services.bracket_service import estimate_bracket
+from services.collection_service import owned_collection_ids
 from services.list_service import export_deck
 from services.list_service import export_shopping_list as save_shopping_list
 from src.ui.charts import BarChart, HorizontalBars
@@ -1490,7 +1491,9 @@ class DecksPage(QWidget):
             return
 
         quantity = dialog.quantity
-        decks.add_to_collection(dialog.selected_card, quantity, foil=dialog.foil)
+        decks.add_to_collection(
+            dialog.selected_card, quantity, foil=dialog.foil, collection_id=dialog.collection_id
+        )
 
         still_missing = max(0, missing.missing - quantity)
         finish = " foil" if dialog.foil else ""
@@ -1519,8 +1522,12 @@ class DecksPage(QWidget):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
+        # The first collection that counts as owned (not a wishlist)
+        owned = owned_collection_ids()
+        target = owned[0] if owned else None
+
         for item in self.missing:
-            decks.add_to_collection(item.entry.card, item.missing)
+            decks.add_to_collection(item.entry.card, item.missing, collection_id=target)
 
         self._collection_changed(f"Added {plural(copies, 'card')} to your collection. The deck is complete.")
 
