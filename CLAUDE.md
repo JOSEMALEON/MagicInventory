@@ -402,7 +402,7 @@ Decisiones del autor:
   lo que falta), curva de maná 0..7+ (`BarChart`), colores y tipos (`HorizontalBars`) en
   src/ui/charts.py, dibujados con QPainter. `deck_service.deck_stats()` (commander + main).
 
-### Fase 3 hecha (10 nov 2026 — commit PENDING). Deck builder completo.
+### Fase 3 hecha (10 nov 2026 — commit 5032645). Deck builder completo.
 - **"Add to deck…"** en la colección (botón + menú contextual, una o varias cartas):
   `AddToDeckDialog` (src/ui/add_to_deck_dialog.py): mazo existente o "＋ New deck…" (nombre + formato;
   con una sola carta se propone su nombre), sección (sugiere Commander si es una carta que puede serlo
