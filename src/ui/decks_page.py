@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PySide6.QtCore import QItemSelectionModel, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor,
@@ -13,6 +15,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -35,7 +38,9 @@ from services import deck_service as decks
 from services.card_service import ScryfallError, get_printings, is_basic_land, search_card
 from services.image_service import art_crop_url, load_card_image, to_pixmap
 from services.price_service import format_money
+from services.list_service import export_deck
 from src.ui.edition_dialog import EditionDialog
+from src.ui.import_deck_dialog import ImportDeckDialog
 from src.ui.widgets import (
     QuantitySpinBox,
     format_mana_cost,
@@ -373,6 +378,11 @@ class DecksPage(QWidget):
         new_button.setCursor(Qt.CursorShape.PointingHandCursor)
         new_button.clicked.connect(self.new_deck)
 
+        import_button = QPushButton("Import deck…")
+        import_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        import_button.setToolTip("Create a deck from a Moxfield / Archidekt / Arena list or a .txt/.csv file")
+        import_button.clicked.connect(self.import_deck)
+
         self.rename_button = QPushButton("Rename")
         self.rename_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.rename_button.clicked.connect(self.rename_deck)
@@ -393,6 +403,7 @@ class DecksPage(QWidget):
         layout.addWidget(caption)
         layout.addWidget(self.deck_list, 1)
         layout.addWidget(new_button)
+        layout.addWidget(import_button)
         layout.addLayout(small_buttons)
 
         panel = styled_panel("cardPanel", layout)
@@ -432,10 +443,16 @@ class DecksPage(QWidget):
         self.deck_value_label = QLabel()
         self.deck_value_label.setObjectName("mutedLabel")
 
+        export_button = QPushButton("Export…")
+        export_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        export_button.setToolTip("Save this deck as a text list (Moxfield / Arena format)")
+        export_button.clicked.connect(self.export_deck)
+
         header = QHBoxLayout()
         header.setSpacing(14)
         header.addWidget(self.deck_title)
         header.addWidget(self.format_input)
+        header.addWidget(export_button)
         header.addStretch()
         header.addWidget(self.deck_value_label)
         header.addWidget(self.count_label)
@@ -721,6 +738,49 @@ class DecksPage(QWidget):
         self.load_decks(select_id=deck_id)
         set_status(self.status_label, f"Deck “{dialog.deck_name}” created. Add cards with the search bar.")
         self.add_input.setFocus()
+
+    def import_deck(self):
+
+        dialog = ImportDeckDialog(self.background, self)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.created_deck_id is None:
+            return
+
+        self.load_decks(select_id=dialog.created_deck_id)
+
+        count = self._main_count()
+        set_status(
+            self.status_label,
+            f"Deck “{self.deck.name}” imported with {plural(count, 'card')}.",
+            "success",
+        )
+
+    def export_deck(self):
+
+        if self.deck is None:
+            return
+
+        safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in self.deck.name).strip()
+        suggested = str(Path.home() / "Documents" / f"{safe_name or 'deck'}.txt")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export deck", suggested, "Text list (*.txt)"
+        )
+
+        if not path:
+            return
+
+        path = Path(path)
+        if path.suffix.lower() != ".txt":
+            path = path.with_suffix(".txt")
+
+        try:
+            export_deck(path, self.deck.name, self.entries)
+        except OSError as error:
+            set_status(self.status_label, f"Could not save the file: {error}", "error")
+            return
+
+        set_status(self.status_label, f"Deck exported to {path}.", "success")
 
     def rename_deck(self):
 

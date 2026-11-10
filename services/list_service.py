@@ -32,13 +32,25 @@ LINE_PATTERN = re.compile(
     re.VERBOSE,
 )
 
-# Foil/etched markers some sites add at the end of a line: "*F*", "*E*"
-FINISH_MARKER = re.compile(r"\s+\*[A-Za-z]+\*\s*$")
+# Markers some sites add at the end of a line: "*F*" (foil), "*E*" (etched),
+# "*CMDR*" (this card is the commander)
+END_MARKER = re.compile(r"\s+\*([A-Za-z]+)\*\s*$")
 
-# Lines that are only section titles in exported decks
+# Section titles in exported decks -> deck section (None = skip its cards)
 SECTION_HEADERS = {
-    "deck", "main", "mainboard", "maindeck", "sideboard", "commander",
-    "companion", "maybeboard", "considering", "tokens",
+    "commander": "commander",
+    "commanders": "commander",
+    "deck": "main",
+    "main": "main",
+    "mainboard": "main",
+    "maindeck": "main",
+    "sideboard": "sideboard",
+    "side": "sideboard",
+    "companion": "sideboard",      # the companion starts in the sideboard
+    "maybeboard": "maybeboard",
+    "considering": "maybeboard",
+    "tokens": None,
+    "about": "about",              # MTG Arena: "About" + "Name My deck"
 }
 
 # Accepted CSV column names (lowercase) for each field
@@ -47,7 +59,16 @@ CSV_COLUMNS = {
     "name": ("name", "card", "card name"),
     "set": ("set code", "set_code", "edition code", "set"),
     "number": ("collector number", "collector_number", "number", "cn"),
+    "section": ("section", "board", "category"),
 }
+
+# Order and titles used when writing a deck list
+DECK_TEXT_SECTIONS = [
+    ("commander", "Commander"),
+    ("main", "Deck"),
+    ("sideboard", "Sideboard"),
+    ("maybeboard", "Maybeboard"),
+]
 
 MAX_QUANTITY = 999
 
@@ -64,6 +85,8 @@ class ListEntry:
     name: str
     set_code: str = None
     collector_number: str = None
+    # Deck section ("commander", "main"...); only used when importing decks
+    section: str = "main"
 
     def describe(self):
         """ "Sol Ring (CMM #410)" or just "Sol Ring". """
@@ -90,52 +113,148 @@ class ListProblem:
 # PARSING
 # ==================================
 
-def parse_card_list(text):
+def _section_header(line):
     """
-    Parse a text list. Return (entries, problems): the valid lines as
-    ListEntry objects and the syntax errors as ListProblem objects.
+    If the line is a section title ("Sideboard", "SIDEBOARD:", "// Commander"),
+    return its key in SECTION_HEADERS; otherwise None.
+    """
+
+    title = line.lstrip("/").strip().rstrip(":").strip().lower()
+    return title if title in SECTION_HEADERS else None
+
+
+def _parse_card_line(number, raw_line, line):
+    """
+    Parse "4 Sol Ring (CMM) 410 *F*". Return (ListEntry, None) or
+    (None, ListProblem). entry.section is "commander" if marked *CMDR*.
+    """
+
+    markers = set()
+    while True:
+        marker = END_MARKER.search(line)
+        if not marker:
+            break
+        markers.add(marker.group(1).upper())
+        line = line[:marker.start()]
+
+    match = LINE_PATTERN.match(line)
+
+    if not match:
+        return None, ListProblem(
+            number,
+            f"“{raw_line.strip()}” is not valid. Use “quantity name”, e.g. “1 Sol Ring”.",
+        )
+
+    quantity = int(match["quantity"])
+
+    if not 1 <= quantity <= MAX_QUANTITY:
+        return None, ListProblem(
+            number, f"quantity {quantity} must be between 1 and {MAX_QUANTITY}."
+        )
+
+    entry = ListEntry(
+        line=number,
+        quantity=quantity,
+        name=match["name"].strip(),
+        set_code=match["set"].lower() if match["set"] else None,
+        collector_number=match["number"],
+    )
+
+    if "CMDR" in markers:
+        entry.section = "commander"
+
+    return entry, None
+
+
+def parse_deck_list(text):
+    """
+    Parse a deck list with sections (Moxfield / Archidekt / MTG Arena):
+
+        About
+        Name Atraxa superfriends
+        Commander
+        1 Atraxa, Praetors' Voice
+        Deck
+        1 Sol Ring
+        Sideboard
+        ...
+
+    Cards before any title go to the main deck. Return (entries, problems,
+    deck_name): each entry has its .section; deck_name comes from an
+    Arena "Name ..." line (or None).
     """
 
     entries = []
     problems = []
+    deck_name = None
+    section = "main"
 
     for number, raw_line in enumerate(text.splitlines(), start=1):
 
         line = raw_line.strip()
 
-        if not line or line.startswith(("#", "//")):
+        if not line:
             continue
 
-        if line.rstrip(":").strip().lower() in SECTION_HEADERS:
+        header = _section_header(line)
+        if header is not None:
+            section = SECTION_HEADERS[header]
             continue
 
-        line = FINISH_MARKER.sub("", line)
-        match = LINE_PATTERN.match(line)
-
-        if not match:
-            problems.append(ListProblem(
-                number,
-                f"“{raw_line.strip()}” is not valid. Use “quantity name”, e.g. “1 Sol Ring”.",
-            ))
+        if line.startswith(("#", "//")):
             continue
 
-        quantity = int(match["quantity"])
-
-        if not 1 <= quantity <= MAX_QUANTITY:
-            problems.append(ListProblem(
-                number, f"quantity {quantity} must be between 1 and {MAX_QUANTITY}."
-            ))
+        if section == "about":
+            # "Name My deck": the deck's name; other About lines are ignored
+            if line.lower().startswith("name "):
+                deck_name = line[5:].strip() or deck_name
             continue
 
-        entries.append(ListEntry(
-            line=number,
-            quantity=quantity,
-            name=match["name"].strip(),
-            set_code=match["set"].lower() if match["set"] else None,
-            collector_number=match["number"],
-        ))
+        if section is None:
+            # Tokens and other skipped sections
+            continue
+
+        entry, problem = _parse_card_line(number, raw_line, line)
+
+        if problem:
+            problems.append(problem)
+            continue
+
+        if entry.section != "commander":
+            entry.section = section
+
+        entries.append(entry)
+
+    return entries, problems, deck_name
+
+
+def parse_card_list(text):
+    """
+    Parse a text list for the collection: section titles are ignored.
+    Return (entries, problems): the valid lines as ListEntry objects and
+    the syntax errors as ListProblem objects.
+    """
+
+    entries, problems, _ = parse_deck_list(text)
+
+    for entry in entries:
+        entry.section = "main"
 
     return entries, problems
+
+
+def suggest_deck_format(entries):
+    """
+    "commander" when the list has a commander or about 100 cards, else None
+    (the user chooses the 60-card format).
+    """
+
+    if any(entry.section == "commander" for entry in entries):
+        return "commander"
+
+    main = sum(entry.quantity for entry in entries if entry.section == "main")
+
+    return "commander" if 98 <= main <= 101 else None
 
 
 def _find_column(header, field):
@@ -171,7 +290,9 @@ def csv_to_list_text(content):
     if columns["name"] is None:
         return "", [ListProblem(1, "the CSV file needs a “Name” column.")]
 
-    lines = []
+    # {section title or "": [lines]}: rows of a "Section"/"Board" column are
+    # written under their title so deck imports keep them
+    sections = {}
 
     for line_number, row in enumerate(rows[1:], start=2):
 
@@ -202,9 +323,15 @@ def csv_to_list_text(content):
             if cell("number"):
                 line += f" {cell('number')}"
 
-        lines.append(line)
+        section = cell("section")
+        title = section if _section_header(section) else ""
+        sections.setdefault(title, []).append(line)
 
-    return "\n".join(lines), problems
+    blocks = []
+    for title, lines in sections.items():
+        blocks.append("\n".join(([title] if title else []) + lines))
+
+    return "\n\n".join(blocks), problems
 
 
 def read_list_file(path):
@@ -303,6 +430,50 @@ CSV_HEADER = [
 
 def _money(value):
     return f"{value:.2f}" if value is not None else ""
+
+
+def card_line(card, quantity):
+    """ "3 Sol Ring (CMM) 410": quantity, name and exact edition. """
+
+    line = f"{quantity} {card.name}"
+
+    if card.set_code:
+        line += f" ({card.set_code.upper()})"
+        if card.collector_number:
+            line += f" {card.collector_number}"
+
+    return line
+
+
+def deck_as_text(deck_name, deck_cards):
+    """
+    MTG Arena / Moxfield style list with sections. It can be imported again
+    here or on deck sites, keeping exact editions.
+    """
+
+    blocks = [f"About\nName {deck_name}"]
+
+    for section, title in DECK_TEXT_SECTIONS:
+        lines = [
+            card_line(entry.card, entry.quantity)
+            for entry in sorted(deck_cards, key=lambda e: e.name.lower())
+            if entry.section == section
+        ]
+        if lines:
+            blocks.append("\n".join([title] + lines))
+
+    return "\n\n".join(blocks) + "\n"
+
+
+def export_deck(path, deck_name, deck_cards):
+    """
+    Save a deck as a text list (.txt). Return the number of card lines.
+    """
+
+    with open(path, "w", encoding="utf-8", newline="") as file:
+        file.write(deck_as_text(deck_name, deck_cards))
+
+    return len(deck_cards)
 
 
 def collection_as_text(cards):

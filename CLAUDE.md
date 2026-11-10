@@ -24,7 +24,8 @@ src/config.py                -> rutas absolutas (BASE_DIR, DB_PATH, STYLES_PATH,
 src/ui/main_window.py        -> ventana: topbar, sidebar, páginas Search (panel de carta) y Collection (tabla + gestión)
 src/ui/edition_dialog.py     -> EditionDialog: elegir otra edición para una carta de la colección (con vista previa)
 src/ui/import_page.py        -> ImportPage: pegar/cargar una lista, comprobarla en Scryfall y añadir las cartas
-src/ui/decks_page.py         -> DecksPage (lista de mazos + mazo abierto) y NewDeckDialog
+src/ui/decks_page.py         -> DecksPage (lista de mazos + mazo abierto), DeckListCard y NewDeckDialog
+src/ui/import_deck_dialog.py -> ImportDeckDialog: crear un mazo desde una lista con secciones
 services/deck_service.py     -> FORMATS, agrupación por tipo, validate_deck() -> [DeckIssue], fachada de mazos
 database/deck_manager.py     -> tablas decks/deck_cards (create_deck_tables) y CRUD de mazos y cartas
 models/deck.py               -> Deck, DeckCard (id, section, card) y SECTIONS/SECTION_LABELS
@@ -304,6 +305,21 @@ Decisiones del autor:
   con la identidad de color de los comandantes en orden WUBRG + barra de 3 px a la izquierda.
   `MANA_COLORS`: W `#F4E4B0`, U `#3B82F6`, B `#A78BFA` (violeta: negro/gris no se vería sobre el
   fondo oscuro), R `#F87171`, G `#4ADE80`; incoloro `#94A3B8`; sin comandante, el azul del tema.
+- **Importar/exportar mazos completos** (adelantado de la fase 3, pedido por el autor):
+  - "Import deck…" (DecksPage) abre `ImportDeckDialog` (src/ui/import_deck_dialog.py): pegar o
+    cargar .txt/.csv, "Check list", y crea un mazo **nuevo** con `create_deck_from_list()`.
+  - `parse_deck_list()` (list_service) entiende cabeceras Commander/Deck/Main/Sideboard/Companion
+    (-> sideboard)/Maybeboard/Considering, también como `SIDEBOARD:` o `// Commander`; `Tokens` se
+    salta; "About" + "Name X" (Arena) da el nombre; `*CMDR*` marca el comandante; `*F*`/`*E*` se
+    ignoran. Sin cabeceras, todo va al main. `parse_card_list()` (colección) usa el mismo lector y
+    pone todo en main.
+  - CSV: columna opcional "Section"/"Board"/"Category".
+  - `suggest_deck_format()`: Commander si hay comandante o 98-101 cartas; si no, lo elige el usuario.
+  - Commander sin comandante en la lista: el diálogo ofrece elegirlo entre las cartas que pueden
+    serlo (si solo hay una, preseleccionada). Nombre por defecto: el de la lista, el del archivo,
+    el del comandante o "Imported deck".
+  - "Export…" en la cabecera del mazo: .txt con `About/Name`, Commander, Deck, Sideboard, Maybeboard
+    y ediciones exactas (`deck_as_text()`); reimportarlo da un mazo idéntico (probado).
 - Los precios de las cartas del mazo son los del momento de añadirlas (aún no se actualizan con
   "Update prices"; pendiente para la fase 2).
 

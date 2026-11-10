@@ -357,11 +357,27 @@ def change_deck_card_printing(deck_card_id, new_card):
     return deck_manager.change_deck_card_printing(deck_card_id, new_card)
 
 
+def create_deck_from_list(name, deck_format, found):
+    """
+    Create a deck from an imported list. found is [(ListEntry, Card)] as
+    returned by list_service.resolve_entries(); each card goes to its
+    entry's section (repeated lines are added up). Return the new deck id.
+    """
+
+    deck_id = deck_manager.create_deck(name.strip(), deck_format)
+
+    for entry, card in found:
+        section = entry.section if entry.section in SECTIONS else "main"
+        deck_manager.add_card_to_deck(deck_id, card, entry.quantity, section)
+
+    return deck_id
+
+
 __all__ = [
     "FORMATS", "SECTIONS", "SECTION_LABELS", "DeckIssue",
     "format_label", "is_commander_format", "deck_size",
     "type_group", "group_deck_cards", "validate_deck", "copy_limit", "can_be_commander",
     "get_decks", "get_deck", "create_deck", "rename_deck", "set_deck_format",
     "delete_deck", "get_deck_cards", "add_card_to_deck", "set_deck_card_quantity",
-    "remove_deck_cards", "move_deck_card", "change_deck_card_printing",
+    "remove_deck_cards", "move_deck_card", "change_deck_card_printing", "create_deck_from_list",
 ]
