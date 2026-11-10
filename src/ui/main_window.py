@@ -10,7 +10,9 @@ from PySide6.QtWidgets import (
     QComboBox,
     QTableWidget,
     QTableWidgetItem,
-    QGroupBox
+    QGroupBox,
+    QStackedWidget,
+    QButtonGroup,
 )
 
 from PySide6.QtCore import Qt
@@ -37,6 +39,18 @@ class MainWindow(QWidget):
         self.setWindowTitle("Magic Inventory")
         self.setMinimumSize(1000, 700)
 
+        self.current_card = None
+        self.printings = []
+
+        # Network and disk work runs here so the window never freezes
+        self.background = BackgroundRunner()
+
+        # Each new request increases its counter; when an answer arrives,
+        # it is ignored if a newer request has been made in the meantime
+        self._search_id = 0
+        self._image_id = 0
+        self._collection_id = 0
+
         # =============================
         # MAIN LAYOUT
         # =============================
@@ -45,9 +59,35 @@ class MainWindow(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # =============================
-        # TOP BAR
-        # =============================
+        main_layout.addWidget(self._build_top_bar())
+
+        body_layout = QHBoxLayout()
+        body_layout.setContentsMargins(15, 15, 15, 15)
+        body_layout.setSpacing(20)
+
+        # One page per sidebar button; only the current one is visible
+        self.pages = QStackedWidget()
+        self.search_page = self._build_search_page()
+        self.collection_page = self._build_collection_page()
+        self.pages.addWidget(self.search_page)
+        self.pages.addWidget(self.collection_page)
+
+        body_layout.addWidget(self._build_sidebar())
+        body_layout.addWidget(self.pages)
+
+        main_layout.addLayout(body_layout)
+        self.setLayout(main_layout)
+
+        self.show_page(self.search_page)
+
+        # Load the saved collection as soon as the app opens
+        self.show_collection()
+
+    # ==================================
+    # LAYOUT BUILDERS
+    # ==================================
+
+    def _build_top_bar(self):
 
         top_bar = QWidget()
         top_layout = QHBoxLayout()
@@ -59,7 +99,6 @@ class MainWindow(QWidget):
         top_layout.addWidget(title)
         top_layout.addStretch()
 
-        # SEARCH BAR
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search card...")
         self.search_input.returnPressed.connect(self.search_card)
@@ -71,38 +110,37 @@ class MainWindow(QWidget):
         top_layout.addWidget(search_button)
 
         top_bar.setLayout(top_layout)
-        main_layout.addWidget(top_bar)
+        return top_bar
 
-        # =============================
-        # DASHBOARD LAYOUT
-        # =============================
-
-        dashboard_layout = QHBoxLayout()
-        dashboard_layout.setContentsMargins(15, 15, 15, 15)
-        dashboard_layout.setSpacing(20)
-
-        # =============================
-        # SIDEBAR
-        # =============================
+    def _build_sidebar(self):
 
         sidebar_layout = QVBoxLayout()
 
-        search_nav = QPushButton("Search")
-        collection_nav = QPushButton("Collection")
+        self.search_nav = QPushButton("Search")
+        self.collection_nav = QPushButton("Collection")
 
-        sidebar_layout.addWidget(search_nav)
-        sidebar_layout.addWidget(collection_nav)
+        # Exclusive checkable buttons: the active page stays highlighted
+        self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+
+        for button in (self.search_nav, self.collection_nav):
+            button.setObjectName("navButton")
+            button.setCheckable(True)
+            self.nav_group.addButton(button)
+            sidebar_layout.addWidget(button)
+
+        self.search_nav.clicked.connect(lambda: self.show_page(self.search_page))
+        self.collection_nav.clicked.connect(lambda: self.show_page(self.collection_page))
+
         sidebar_layout.addStretch()
 
         sidebar_widget = QWidget()
         sidebar_widget.setLayout(sidebar_layout)
         sidebar_widget.setFixedWidth(140)
 
-        dashboard_layout.addWidget(sidebar_widget)
+        return sidebar_widget
 
-        # =============================
-        # CARD PANEL
-        # =============================
+    def _build_search_page(self):
 
         card_panel = QVBoxLayout()
         card_panel.setSpacing(10)
@@ -149,34 +187,37 @@ class MainWindow(QWidget):
 
         card_panel_widget = QWidget()
         card_panel_widget.setLayout(card_panel)
-        card_panel_widget.setFixedWidth(360)
+        card_panel_widget.setFixedWidth(480)
 
-        card_container = QWidget()
-        card_container_layout = QVBoxLayout()
-        card_container_layout.setContentsMargins(15, 15, 15, 15)
-        card_container_layout.addWidget(card_panel_widget)
-        card_container.setLayout(card_container_layout)
+        page = QWidget()
+        page_layout = QHBoxLayout()
+        page_layout.setContentsMargins(15, 15, 15, 15)
+        page_layout.addWidget(card_panel_widget)
+        page_layout.addStretch()
+        page.setLayout(page_layout)
 
-        dashboard_layout.addWidget(card_container)
+        return page
 
-        # =============================
-        # COLLECTION PANEL
-        # =============================
+    def _build_collection_page(self):
 
         collection_panel = QVBoxLayout()
         collection_panel.setSpacing(10)
-
-        collection_button = QPushButton("Refresh")
-        collection_button.clicked.connect(self.show_collection)
+        collection_panel.setContentsMargins(15, 15, 15, 15)
 
         header_layout = QHBoxLayout()
 
         collection_title = QLabel("My Collection")
         collection_title.setObjectName("sectionTitle")
 
+        self.collection_summary = QLabel()
+
+        refresh_button = QPushButton("Refresh")
+        refresh_button.clicked.connect(self.show_collection)
+
         header_layout.addWidget(collection_title)
+        header_layout.addWidget(self.collection_summary)
         header_layout.addStretch()
-        header_layout.addWidget(collection_button)
+        header_layout.addWidget(refresh_button)
 
         collection_panel.addLayout(header_layout)
 
@@ -187,43 +228,29 @@ class MainWindow(QWidget):
         )
 
         self.collection_table.setColumnWidth(0, 120)
+        self.collection_table.setColumnWidth(1, 250)
+        self.collection_table.setColumnWidth(2, 350)
         self.collection_table.verticalHeader().setDefaultSectionSize(150)
         self.collection_table.horizontalHeader().setStretchLastSection(True)
 
         collection_panel.addWidget(self.collection_table)
 
-        collection_panel_widget = QWidget()
-        collection_panel_widget.setLayout(collection_panel)
+        page = QWidget()
+        page.setLayout(collection_panel)
 
-        collection_container = QWidget()
-        collection_container_layout = QVBoxLayout()
-        collection_container_layout.setContentsMargins(15, 15, 15, 15)
-        collection_container_layout.addWidget(collection_panel_widget)
-        collection_container.setLayout(collection_container_layout)
+        return page
 
-        dashboard_layout.addWidget(collection_container)
+    # ==================================
+    # NAVIGATION
+    # ==================================
 
-        # =============================
-        # FINALIZE
-        # =============================
+    def show_page(self, page):
 
-        main_layout.addLayout(dashboard_layout)
-        self.setLayout(main_layout)
+        self.pages.setCurrentWidget(page)
 
-        self.current_card = None
-        self.printings = []
-
-        # Network and disk work runs here so the window never freezes
-        self.background = BackgroundRunner()
-
-        # Each new request increases its counter; when an answer arrives,
-        # it is ignored if a newer request has been made in the meantime
-        self._search_id = 0
-        self._image_id = 0
-        self._collection_id = 0
-
-        # Show the saved collection as soon as the app opens
-        self.show_collection()
+        # Keep the sidebar in sync, also when the page changes from code
+        nav_button = self.search_nav if page is self.search_page else self.collection_nav
+        nav_button.setChecked(True)
 
     # ==================================
     # SEARCH CARD
@@ -236,6 +263,9 @@ class MainWindow(QWidget):
         if not card_name:
             self.result_area.setText("Please enter a card name")
             return
+
+        # Searching from the top bar always shows the result
+        self.show_page(self.search_page)
 
         self._search_id += 1
         search_id = self._search_id
@@ -395,6 +425,11 @@ Rarity: {card.rarity}
         # Remove old images/texts so a row never shows another card's data
         self.collection_table.clearContents()
         self.collection_table.setRowCount(len(cards))
+
+        total = sum(card.quantity for card in cards)
+        self.collection_summary.setText(
+            f"{len(cards)} printings · {total} cards"
+        )
 
         for row, card in enumerate(cards):
 

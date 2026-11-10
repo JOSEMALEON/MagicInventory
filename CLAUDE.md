@@ -83,18 +83,23 @@ scryfall_id, set_code, collector_number`.
 - `Card.prints_search_uri` existe solo en memoria (no se guarda en la BD).
 - `.gitignore` añadido; `.pyc` y `magic_inventory.db` ya no están en git (commit 15d6920).
 
-### Hecho (rendimiento, 10 nov 2026 — pendiente de commit)
+### Hecho (rendimiento, 10 nov 2026 — commit c55ace3)
 - Caché de imágenes en disco (clave = sha1 de la URL, que incluye la versión de Scryfall;
   escritura atómica con fichero temporal + `os.replace`).
 - Búsqueda, lista de ediciones e imágenes (panel y tabla) en segundo plano con `BackgroundRunner`.
   Refrescar la tabla con la caché llena tarda ~0,05 s.
 
+### Hecho (navegación, 10 nov 2026 — pendiente de commit)
+- `QStackedWidget` con dos páginas: `search_page` (panel de carta) y `collection_page` (tabla +
+  resumen "N printings · M cards"). `show_page(page)` cambia de página y marca el botón de la
+  sidebar (`QButtonGroup` exclusivo, estilo `#navButton:checked` en el .qss).
+- Buscar desde la barra superior lleva siempre a la página Search.
+- El `__init__` de MainWindow se dividió en `_build_top_bar/_sidebar/_search_page/_collection_page`.
+
 ## Pendiente (en este orden)
 
-1. **Navegación:** los botones "Search" y "Collection" de la sidebar no hacen nada; conectarlos
-   a vistas separadas (QStackedWidget).
-2. **Gestión de la colección:** borrar cartas y editar cantidades desde la tabla.
-3. **Limpieza:**
+1. **Gestión de la colección:** borrar cartas y editar cantidades desde la tabla.
+2. **Limpieza:**
    - `requirements.txt` está en UTF-16 y es un `pip freeze` del entorno completo (PyAutoGUI,
      pynput, keyboard... que no se usan). Dejar solo `PySide6` y `requests`, en UTF-8.
    - `COLORS` de `config.py` no se usa (los colores están repetidos en `styles.qss`).

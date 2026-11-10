@@ -110,6 +110,27 @@ QPushButton:hover {
 
 
 /* =========================
+   SIDEBAR NAVIGATION
+========================= */
+
+QPushButton#navButton {
+    background-color: #3F5FA8;
+    color: white;
+    text-align: left;
+    padding: 10px 12px;
+}
+
+QPushButton#navButton:hover {
+    background-color: #7093EF;
+}
+
+QPushButton#navButton:checked {
+    background-color: white;
+    color: #1E2A4A;
+}
+
+
+/* =========================
    PRIMARY BUTTON
 ========================= */
 
