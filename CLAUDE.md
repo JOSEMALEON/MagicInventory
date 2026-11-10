@@ -449,7 +449,7 @@ Decisiones del autor:
   `_spin_id` cancela la animación si se reconstruyen los paneles (`rebuild()` lo incrementa).
 - Ojo: al reconstruir paneles, `hide()` + `setParent(None)` antes de `deleteLater()` (si no, los
   viejos se siguen dibujando debajo hasta que Qt los borra).
-### Fase 2 hecha (10 nov 2026 — commit PENDING): mazos por jugador y dados
+### Fase 2 hecha (10 nov 2026 — commit 6a80d8d): mazos por jugador y dados
 - **Mazo por jugador** (pedido por el autor): clic en el nombre -> `PlayerSetupDialog` (nombre +
   mazo). `Player.deck_id` (guardado en el JSON). `LifeCounter.set_player()` cambia nombre, mazo y
   Partner en **un solo** paso de deshacer (`_apply_partner` compartido con `set_partner`).
