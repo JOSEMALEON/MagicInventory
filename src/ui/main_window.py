@@ -60,6 +60,7 @@ from src.ui.background import BackgroundRunner
 from src.ui.edition_dialog import EditionDialog
 from src.ui.import_page import ImportPage
 from src.ui.decks_page import DecksPage
+from src.ui.life_page import LifePage
 from src.ui.add_to_deck_dialog import AddToDeckDialog
 from services.deck_service import (
     SECTION_LABELS,
@@ -233,6 +234,9 @@ class MainWindow(QWidget):
         )
         self.pages.addWidget(self.decks_page)
 
+        self.life_page = LifePage()
+        self.pages.addWidget(self.life_page)
+
         body_layout.addWidget(self._build_sidebar())
         body_layout.addWidget(self.pages)
 
@@ -310,12 +314,13 @@ class MainWindow(QWidget):
         self.import_nav = QPushButton("Import cards")
         self.collection_nav = QPushButton("Collection")
         self.decks_nav = QPushButton("Decks")
+        self.life_nav = QPushButton("Life counter")
 
         # Exclusive checkable buttons: the active page stays highlighted
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
 
-        for button in (self.search_nav, self.import_nav, self.collection_nav, self.decks_nav):
+        for button in (self.search_nav, self.import_nav, self.collection_nav, self.decks_nav, self.life_nav):
             button.setObjectName("navButton")
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -326,6 +331,7 @@ class MainWindow(QWidget):
         self.import_nav.clicked.connect(lambda: self.show_page(self.import_page))
         self.collection_nav.clicked.connect(lambda: self.show_page(self.collection_page))
         self.decks_nav.clicked.connect(lambda: self.show_page(self.decks_page))
+        self.life_nav.clicked.connect(lambda: self.show_page(self.life_page))
 
         sidebar_layout.addStretch()
 
@@ -673,6 +679,7 @@ class MainWindow(QWidget):
             self.import_page: self.import_nav,
             self.collection_page: self.collection_nav,
             self.decks_page: self.decks_nav,
+            self.life_page: self.life_nav,
         }
         nav_buttons[page].setChecked(True)
 

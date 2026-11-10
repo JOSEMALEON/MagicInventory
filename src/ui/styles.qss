@@ -621,6 +621,146 @@ QLabel#visualGroupTitleMissing {
     color: #F87171;
 }
 
+/* ---------- Life counter ---------- */
+
+QLineEdit#playerName {
+    background-color: transparent;
+    border: 1px solid transparent;
+    font-size: 16px;
+    font-weight: 700;
+    padding: 4px 6px;
+}
+
+QLineEdit#playerName:hover,
+QLineEdit#playerName:focus {
+    background-color: #111318;
+    border: 1px solid #2C313D;
+}
+
+QLabel#lifeTotal {
+    font-size: 64px;
+    font-weight: 800;
+    min-width: 120px;
+}
+
+QLabel#lifeChange {
+    color: #8B92A5;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QPushButton#lifeButton {
+    background-color: #242833;
+    border: 1px solid #2C313D;
+    border-radius: 10px;
+    padding: 12px 0;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+QPushButton#lifeButton:hover {
+    background-color: #2C313D;
+}
+
+QPushButton#lifeButton:pressed {
+    background-color: #1F2B44;
+}
+
+QPushButton#markerButton {
+    background-color: transparent;
+    border: 1px solid #2C313D;
+    border-radius: 8px;
+    padding: 4px 0;
+    color: #6F7689;
+    font-size: 14px;
+}
+
+QPushButton#markerButton:checked {
+    background-color: rgba(251, 191, 36, 0.18);
+    border: 1px solid #FBBF24;
+    color: #FBBF24;
+}
+
+/* Two commanders: the violet "special" accent of the theme */
+QPushButton#partnerButton {
+    background-color: transparent;
+    border: 1px solid #2C313D;
+    border-radius: 8px;
+    padding: 4px 10px;
+    color: #A3A9B8;
+    font-size: 12px;
+}
+
+QPushButton#partnerButton:checked {
+    background-color: rgba(167, 139, 250, 0.18);
+    border: 1px solid #A78BFA;
+    color: #C4B5FD;
+}
+
+QLabel#startsBadge {
+    background-color: rgba(74, 222, 128, 0.16);
+    color: #4ADE80;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 3px 8px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+/* Shines for a few seconds when the "Who starts?" animation stops */
+QLabel#startsBadge[glow="true"] {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #22C55E, stop:1 #4ADE80);
+    color: #052E16;
+    border: 1px solid #86EFAC;
+}
+
+QLabel#damageSource {
+    font-size: 11px;
+    font-weight: 700;
+}
+
+QLabel#damageBox {
+    background-color: #111318;
+    border-radius: 8px;
+    padding: 8px 2px;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QLabel#damageBox:hover,
+QLabel#counterBox:hover {
+    background-color: #242833;
+}
+
+QLabel#damageBox[lethal="true"],
+QLabel#counterBox[lethal="true"] {
+    background-color: rgba(248, 113, 113, 0.22);
+    color: #F87171;
+}
+
+QLabel#counterBox {
+    background-color: #111318;
+    border: 1px solid #2C313D;
+    border-radius: 8px;
+    padding: 6px 2px;
+    color: #6F7689;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QLabel#counterBox[active="true"] {
+    color: #E8EAF0;
+    border: 1px solid #3A4050;
+}
+
+QLabel#eliminatedLabel {
+    background-color: rgba(248, 113, 113, 0.16);
+    color: #F87171;
+    border-radius: 8px;
+    padding: 6px;
+    font-weight: 700;
+}
+
 QWidget#statsPanel {
     background-color: #1B1E26;
     border: 1px solid #2C313D;

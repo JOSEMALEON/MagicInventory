@@ -30,6 +30,9 @@ src/ui/got_it_dialog.py      -> GotItDialog: registrar copias compradas de una c
 src/ui/add_to_deck_dialog.py -> AddToDeckDialog: añadir cartas de la colección a un mazo (o a uno nuevo)
 src/ui/deck_visual.py        -> DeckVisualView / CardTile: vista visual del mazo con miniaturas
 src/ui/flow_layout.py        -> FlowLayout: coloca widgets en filas que se ajustan al ancho
+src/ui/life_page.py          -> LifePage (contador de vidas) y PlayerPanel (un jugador)
+services/life_service.py     -> lógica del contador (sin Qt): Game/Player, LifeCounter (cambios + deshacer),
+                                guardado en cache/life_game.json
 src/ui/charts.py             -> BarChart (curva de maná) y HorizontalBars (colores, tipos) con QPainter
 services/deck_service.py     -> FORMATS, agrupación por tipo, validate_deck() -> [DeckIssue], fachada de mazos
 database/deck_manager.py     -> tablas decks/deck_cards (create_deck_tables) y CRUD de mazos y cartas
@@ -418,9 +421,41 @@ Decisiones del autor:
 - Tests con menús: un `QMenu.exec` real bloquea en modo offscreen; sustituir `decks_page.QMenu` por
   una subclase que registre las acciones.
 
+## Contador de vidas
+
+### Fase 1 hecha (10 nov 2026 — commit PENDING)
+- Decisiones del autor: por ahora app de escritorio en pantalla vertical normal (sin paneles girados
+  ni modo mesa; eso, para la futura versión móvil). Prioridad: que sea funcional, hasta 6 jugadores.
+- Página **Life counter** (sidebar, la última). Barra: jugadores 2-6, vida inicial 20/30/40,
+  New game (con confirmación; conserva nombres, colores y Partner), Who starts? (al azar), Undo (Ctrl+Z).
+  Disposición: 2 -> 2 columnas, 3 -> 3, 4 -> 2×2, 5 y 6 -> 3×2.
+- Cada jugador (`PlayerPanel`): nombre editable, color de asiento (fondo teñido + barra superior),
+  vida grande con −5/−1/+1/+5 y acumulador del último cambio ("−6", se oculta a los 2 s).
+  - **Daño de comandante**: una casilla por rival (clic +1, clic derecho −1); resta vida (y quitarlo
+    la devuelve); 21 de un mismo comandante elimina.
+  - **Partner** (botón por jugador, pedido por el autor): en los paneles de **todos los demás** su
+    casilla se divide en dos (A | B) que cuentan por separado; también desdobla su impuesto. Al
+    desactivarlo, el daño y los lanzamientos de B se suman a A. Cambiar Partner reconstruye los paneles.
+  - Contadores: veneno (10 elimina), experiencia, energía, rad, impuesto (lanzamientos × 2).
+  - Marcadores: Monarch e Initiative (únicos: pasan de un jugador a otro), City's blessing.
+  - Eliminado: aviso con el motivo y el panel atenuado (`QGraphicsOpacityEffect`); se puede deshacer.
+- La partida se guarda tras cada cambio en `cache/life_game.json` y se recupera al abrir la app.
+- **Animación de "Who starts?"** (pedida por el autor): primero se elige el jugador al azar
+  (`choose_first_player`); luego una luz verde (`PlayerPanel.set_spotlight`) recorre los paneles en
+  orden ~3 vueltas, cada paso más lento (de `SPIN_FIRST_STEP_MS` 45 ms a ~500 ms, curva cúbica), y se
+  para en el elegido: su panel queda iluminado y la insignia "Starts" brilla (`set_starts_glow`,
+  propiedad `glow`) durante `SPIN_HOLD_MS` (3 s). Dura ~4 s; el botón se desactiva mientras tanto.
+  `_spin_id` cancela la animación si se reconstruyen los paneles (`rebuild()` lo incrementa).
+- Ojo: al reconstruir paneles, `hide()` + `setParent(None)` antes de `deleteLater()` (si no, los
+  viejos se siguen dibujando debajo hasta que Qt los borra).
+- Ideas para siguientes fases (lluvia de ideas del 10 nov): elegir mazo por jugador (arte y colores
+  del comandante, vida según formato, aviso de brackets descompensados), estadísticas por mazo,
+  contador de turnos y temporizador, dados, historial y gráfico de vidas, Planechase/Archenemy,
+  atajos de teclado, ventana aparte.
+
 ## Pendiente
 
-- Roadmap: filtros por campo en la colección, contador de vidas, asistente de IA, exportar a JSON.
+- Roadmap: filtros por campo en la colección, asistente de IA, exportar a JSON.
 - Ideas de mejora: deshacer el último borrado; mostrar colores de rareza también en
   filas seleccionadas; guardar el filtro entre sesiones.
 
