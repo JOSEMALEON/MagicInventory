@@ -1,11 +1,12 @@
 from PySide6.QtWidgets import QApplication
 from src.ui.main_window import MainWindow
+from src.config import STYLES_PATH
 import sys
 
 
 def load_styles(app):
 
-    with open("src/ui/styles.qss", "r") as f:
+    with open(STYLES_PATH, "r", encoding="utf-8") as f:
         app.setStyleSheet(f.read())
 
 

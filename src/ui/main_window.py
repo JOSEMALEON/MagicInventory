@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QTextEdit,
     QSpinBox,
+    QComboBox,
     QTableWidget,
     QTableWidgetItem,
     QGroupBox
@@ -14,7 +15,13 @@ from PySide6.QtWidgets import (
 
 from PySide6.QtCore import Qt
 
-from services.card_service import search_card, save_card, get_collection
+from services.card_service import (
+    search_card,
+    get_printings,
+    save_card,
+    get_collection,
+    ScryfallError,
+)
 from services.image_service import get_card_pixmap
 from database.database_manager import create_database
 
@@ -114,6 +121,16 @@ class MainWindow(QWidget):
         card_group.setLayout(card_layout)
         card_panel.addWidget(card_group)
 
+        # EDITION SELECTOR (filled after each search with every printing)
+        edition_label = QLabel("Edition")
+
+        self.edition_input = QComboBox()
+        self.edition_input.setEnabled(False)
+        self.edition_input.currentIndexChanged.connect(self.select_printing)
+
+        card_panel.addWidget(edition_label)
+        card_panel.addWidget(self.edition_input)
+
         quantity_label = QLabel("Quantity")
 
         self.quantity_input = QSpinBox()
@@ -193,6 +210,10 @@ class MainWindow(QWidget):
         self.setLayout(main_layout)
 
         self.current_card = None
+        self.printings = []
+
+        # Show the saved collection as soon as the app opens
+        self.show_collection()
 
     # ==================================
     # SEARCH CARD
@@ -206,28 +227,89 @@ class MainWindow(QWidget):
             self.result_area.setText("Please enter a card name")
             return
 
-        card = search_card(card_name)
+        try:
+            card = search_card(card_name)
+        except ScryfallError:
+            self.result_area.setText(
+                "Could not connect to Scryfall.\nCheck your connection and try again."
+            )
+            return
 
-        if card:
-            self.current_card = card
+        if not card:
+            # Forget the previous card so "Add to Collection" can't add it by mistake
+            self.current_card = None
+            self._set_printings([])
+            self.card_image.clear()
+            self.result_area.setText("Card not found")
+            self.search_input.clear()
+            return
 
-            pixmap = get_card_pixmap(card.image_url, width=200)
-            if pixmap:
-                self.card_image.setPixmap(pixmap)
+        self._show_card(card)
+        self.search_input.clear()
 
-            result_text = f"""
+        try:
+            printings = get_printings(card)
+        except ScryfallError:
+            # The card itself is fine; just offer the default edition
+            printings = [card]
+
+        self._set_printings(printings, selected=card)
+
+    # ==================================
+    # EDITION SELECTOR
+    # ==================================
+
+    def _set_printings(self, printings, selected=None):
+        """
+        Fill the edition combo box and select the given printing.
+        """
+
+        self.printings = printings
+
+        # Avoid select_printing() firing (and downloading images) while filling
+        self.edition_input.blockSignals(True)
+        self.edition_input.clear()
+
+        selected_index = 0
+
+        for index, printing in enumerate(printings):
+            self.edition_input.addItem(printing.printing_label)
+
+            if selected and printing.scryfall_id == selected.scryfall_id:
+                selected_index = index
+
+        if printings:
+            self.edition_input.setCurrentIndex(selected_index)
+
+        self.edition_input.blockSignals(False)
+        self.edition_input.setEnabled(len(printings) > 1)
+
+    def select_printing(self, index):
+
+        if 0 <= index < len(self.printings):
+            self._show_card(self.printings[index])
+
+    def _show_card(self, card):
+        """
+        Show the card's image and data, and make it the one that will be added.
+        """
+
+        self.current_card = card
+
+        pixmap = get_card_pixmap(card.image_url, width=200)
+        if pixmap:
+            self.card_image.setPixmap(pixmap)
+        else:
+            self.card_image.clear()
+
+        result_text = f"""
 Name: {card.name}
-Set: {card.set_name}
+Set: {card.printing_label}
 Type: {card.type_line}
 Mana Cost: {card.mana_cost}
 Rarity: {card.rarity}
 """
-            self.result_area.setText(result_text)
-
-        else:
-            self.result_area.setText("Card not found")
-
-        self.search_input.clear()
+        self.result_area.setText(result_text)
 
     # ==================================
     # SAVE CARD
@@ -259,6 +341,8 @@ Rarity: {card.rarity}
             self.collection_table.setRowCount(0)
             return
 
+        # Remove old images/texts so a row never shows another card's data
+        self.collection_table.clearContents()
         self.collection_table.setRowCount(len(cards))
 
         for row, card in enumerate(cards):
@@ -271,5 +355,5 @@ Rarity: {card.rarity}
                 self.collection_table.setCellWidget(row, 0, label)
 
             self.collection_table.setItem(row, 1, QTableWidgetItem(card.name))
-            self.collection_table.setItem(row, 2, QTableWidgetItem(card.set_name))
+            self.collection_table.setItem(row, 2, QTableWidgetItem(card.printing_label))
             self.collection_table.setItem(row, 3, QTableWidgetItem(str(card.quantity)))
