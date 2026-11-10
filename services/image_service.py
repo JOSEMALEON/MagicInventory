@@ -65,7 +65,19 @@ def _get_image_bytes(url):
     return response.content
 
 
-def load_card_image(url, width=None, height=None):
+def art_crop_url(image_url):
+    """
+    URL of the illustration only ("art crop") for a Scryfall card image URL:
+    .../normal/front/... -> .../art_crop/front/...  None if it isn't a Scryfall image.
+    """
+
+    if not image_url or "/normal/" not in image_url:
+        return None
+
+    return image_url.replace("/normal/", "/art_crop/", 1)
+
+
+def load_card_image(url, width=None, height=None, rounded=True):
     """
     Return the card image as a scaled QImage, or None if it fails.
 
@@ -97,7 +109,7 @@ def load_card_image(url, width=None, height=None):
     elif width:
         image = image.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
 
-    return _round_corners(image)
+    return _round_corners(image) if rounded else image
 
 
 def _round_corners(image):

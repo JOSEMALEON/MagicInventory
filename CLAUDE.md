@@ -294,6 +294,16 @@ Decisiones del autor:
   página de ediciones (las ~175 más recientes, 1 petición, ~0,5 s en vez de ~3,5 s con las ~930 de
   Swamp) y se preselecciona la más reciente, en el buscador del mazo y en Search. El diálogo
   "Change edition…" usa `get_all_printings()` (todas).
+- **Ilustración del comandante en la lista de mazos** (pedido por el autor): cada fila es un
+  `DeckListCard` (QWidget con `setItemWidget`) que pinta el `art_crop` del primer comandante en el
+  62 % derecho, recortado y con degradado a transparente hacia la izquierda (`CompositionMode_DestinationIn`).
+  URL: `art_crop_url()` en image_service (`/normal/` -> `/art_crop/`, sin tocar la BD). Imágenes en
+  `self._deck_art` (memoria) + caché en disco. Mazos sin comandante: sin imagen.
+- **Selección con los colores del comandante** (pedido por el autor): el resaltado del mazo
+  seleccionado lo pinta `DeckListCard` (el `::item:selected` del .qss es transparente): degradado
+  con la identidad de color de los comandantes en orden WUBRG + barra de 3 px a la izquierda.
+  `MANA_COLORS`: W `#F4E4B0`, U `#3B82F6`, B `#A78BFA` (violeta: negro/gris no se vería sobre el
+  fondo oscuro), R `#F87171`, G `#4ADE80`; incoloro `#94A3B8`; sin comandante, el azul del tema.
 - Los precios de las cartas del mazo son los del momento de añadirlas (aún no se actualizan con
   "Update prices"; pendiente para la fase 2).
 

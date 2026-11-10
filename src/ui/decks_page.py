@@ -1,5 +1,14 @@
-from PySide6.QtCore import QItemSelectionModel, Qt
-from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
+from PySide6.QtCore import QItemSelectionModel, QRectF, QSize, Qt
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QImage,
+    QKeySequence,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -24,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from services import deck_service as decks
 from services.card_service import ScryfallError, get_printings, is_basic_land, search_card
-from services.image_service import load_card_image, to_pixmap
+from services.image_service import art_crop_url, load_card_image, to_pixmap
 from services.price_service import format_money
 from src.ui.edition_dialog import EditionDialog
 from src.ui.widgets import (
@@ -41,6 +50,19 @@ COL_QTY, COL_NAME, COL_MANA, COL_EDITION, COL_PRICE = range(5)
 PREVIEW_WIDTH = 230
 PREVIEW_HEIGHT = 320
 
+# Mana colors for the deck selector, tuned for the dark background.
+# Black uses a soft violet: a real black/grey would be invisible here.
+MANA_COLORS = {
+    "W": "#F4E4B0",
+    "U": "#3B82F6",
+    "B": "#A78BFA",
+    "R": "#F87171",
+    "G": "#4ADE80",
+}
+COLORLESS_COLOR = "#94A3B8"
+DEFAULT_SELECTION_COLORS = ["#3B82F6", "#38BDF8"]   # theme blue (decks without commander)
+WUBRG = "WUBRG"
+
 ERROR_COLOR = "#F87171"
 WARNING_COLOR = "#FBBF24"
 OK_COLOR = "#4ADE80"
@@ -48,6 +70,176 @@ OK_COLOR = "#4ADE80"
 
 def plural(count, word):
     return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+class DeckListCard(QWidget):
+    """
+    One deck in the deck list: name and "Format · 87/100 ✓/⚠" on the left,
+    and the commander's illustration on the right, fading into the
+    background so the text stays readable.
+    """
+
+    HEIGHT = 62
+    ART_WIDTH_RATIO = 0.62   # part of the row covered by the illustration
+    RADIUS = 8               # same as QListWidget#deckList::item
+
+    def __init__(self):
+        super().__init__()
+
+        # Transparent: the list's hover/selection background shows through
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        self._art = None      # original illustration (QImage)
+        self._faded = None    # illustration cropped to the row with the fade
+
+        # Selection look: painted here so it can use the commander's colors
+        self._selected = False
+        self._colors = DEFAULT_SELECTION_COLORS
+
+        self.name_label = QLabel()
+        self.name_label.setObjectName("deckCardName")
+
+        self.info_label = QLabel()
+        self.info_label.setObjectName("deckCardInfo")
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(12, 9, 12, 9)
+        layout.setSpacing(2)
+        layout.addWidget(self.name_label)
+        layout.addWidget(self.info_label)
+        self.setLayout(layout)
+
+        self.setFixedHeight(self.HEIGHT)
+
+    def set_texts(self, name, info):
+        self.name_label.setText(name)
+        self.info_label.setText(info)
+
+    def set_art(self, image):
+        self._art = image
+        self._prepare_art()
+        self.update()
+
+    def set_selected(self, selected):
+        if selected != self._selected:
+            self._selected = selected
+            self.update()
+
+    def set_colors(self, colors):
+        """
+        Hex colors of the commander's identity (WUBRG order), or the theme
+        blue when the deck has no commander.
+        """
+        self._colors = colors or DEFAULT_SELECTION_COLORS
+        self.update()
+
+    def _paint_selection(self, painter):
+        """
+        Glow in the commander's colors fading to the right, plus an accent
+        bar on the left (like the active sidebar button).
+        """
+
+        colors = [QColor(color) for color in self._colors]
+        width = self.width()
+
+        glow = QLinearGradient(0, 0, width, 0)
+        last = len(colors) - 1
+
+        for index, color in enumerate(colors):
+            stop = 0.0 if last == 0 else 0.55 * index / last
+            glow.setColorAt(stop, _with_alpha(color, 90))
+
+        glow.setColorAt(1.0, _with_alpha(colors[-1], 8))
+        painter.fillRect(self.rect(), glow)
+
+        # Accent bar: the colors from top to bottom
+        bar = QLinearGradient(0, 0, 0, self.height())
+        for index, color in enumerate(colors):
+            bar.setColorAt(0.0 if last == 0 else index / last, color)
+        painter.fillRect(0, 0, 3, self.height(), bar)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._prepare_art()
+
+    def _prepare_art(self):
+        """
+        Crop the illustration to the right part of the row and fade it to
+        transparent towards the left (done once per size, not on every paint).
+        """
+
+        if self._art is None or self.width() <= 0:
+            self._faded = None
+            return
+
+        width = max(1, int(self.width() * self.ART_WIDTH_RATIO))
+        height = self.height()
+
+        # Cover the area keeping the proportions, then take the middle
+        scaled = self._art.scaled(
+            width, height,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        x = (scaled.width() - width) // 2
+        y = (scaled.height() - height) // 3   # illustrations focus a bit above the middle
+        faded = scaled.copy(x, y, width, height).convertToFormat(
+            QImage.Format.Format_ARGB32_Premultiplied
+        )
+
+        # Keep only as much of each pixel as the gradient says (0 = invisible)
+        fade = QLinearGradient(0, 0, width, 0)
+        fade.setColorAt(0.0, QColor(0, 0, 0, 0))
+        fade.setColorAt(0.45, QColor(0, 0, 0, 120))
+        fade.setColorAt(1.0, QColor(0, 0, 0, 215))
+
+        painter = QPainter(faded)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        painter.fillRect(faded.rect(), fade)
+        painter.end()
+
+        self._faded = faded
+
+    def paintEvent(self, event):
+
+        if self._selected or self._faded is not None:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            # Rounded corners, like the list item under it
+            clip = QPainterPath()
+            clip.addRoundedRect(QRectF(self.rect()), self.RADIUS, self.RADIUS)
+            painter.setClipPath(clip)
+
+            if self._selected:
+                self._paint_selection(painter)
+
+            if self._faded is not None:
+                painter.drawImage(self.width() - self._faded.width(), 0, self._faded)
+
+            painter.end()
+
+        super().paintEvent(event)
+
+
+def _with_alpha(color, alpha):
+    result = QColor(color)
+    result.setAlpha(alpha)
+    return result
+
+
+def identity_colors(color_identity):
+    """
+    ["G", "W"] -> hex colors in WUBRG order: [white, green].
+    An empty identity (colorless commander) -> grey.
+    """
+
+    letters = [letter for letter in WUBRG if letter in (color_identity or [])]
+
+    if not letters:
+        return [COLORLESS_COLOR]
+
+    return [MANA_COLORS[letter] for letter in letters]
 
 
 class NewDeckDialog(QDialog):
@@ -133,6 +325,9 @@ class DecksPage(QWidget):
         self.entries = []         # its DeckCard lines
         self.issues = []          # its validation messages
         self.found_printings = [] # editions of the card being added
+
+        # Commander illustrations for the deck list: {art url: QImage}
+        self._deck_art = {}
 
         # Ignore answers that arrive after a newer request
         self._search_id = 0
@@ -400,17 +595,18 @@ class DecksPage(QWidget):
 
         for row, deck in enumerate(decks.get_decks()):
 
-            issues = decks.validate_deck(deck.format, decks.get_deck_cards(deck.id))
-            errors = sum(issue.level == "error" for issue in issues)
-            mark = "✓" if not errors else "⚠"
+            entries = decks.get_deck_cards(deck.id)
+            issues = decks.validate_deck(deck.format, entries)
 
-            item = QListWidgetItem(
-                f"{deck.name}\n{decks.format_label(deck.format)} · "
-                f"{deck.card_count}/{decks.deck_size(deck.format)}  {mark}"
-            )
+            # The item only holds the deck id; DeckListCard draws its content
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, deck.id)
-            item.setToolTip("Legal" if not errors else plural(errors, "problem"))
+            item.setSizeHint(QSize(0, DeckListCard.HEIGHT))
             self.deck_list.addItem(item)
+
+            card_widget = DeckListCard()
+            self.deck_list.setItemWidget(item, card_widget)
+            self._fill_deck_item(item, deck, entries, issues)
 
             if deck.id == select_id:
                 selected_row = row
@@ -431,25 +627,88 @@ class DecksPage(QWidget):
 
     def _on_deck_selected(self, current, previous):
 
+        # The selection glow is painted by each DeckListCard
+        for row in range(self.deck_list.count()):
+            item = self.deck_list.item(row)
+            card_widget = self.deck_list.itemWidget(item)
+            if card_widget is not None:
+                card_widget.set_selected(item is current)
+
         if current is not None:
             self._open_deck(current.data(Qt.ItemDataRole.UserRole))
 
     def _update_deck_list_item(self):
-        """Refresh the text of the open deck in the list (count and ✓/⚠)."""
+        """Refresh the open deck in the list (count, ✓/⚠ and commander art)."""
 
         item = self.deck_list.currentItem()
         if item is None or self.deck is None:
             return
 
-        count = self._main_count()
-        errors = sum(issue.level == "error" for issue in self.issues)
+        self._fill_deck_item(item, self.deck, self.entries, self.issues)
+
+    def _fill_deck_item(self, item, deck, entries, issues):
+        """
+        Texts, tooltip and commander illustration of one deck in the list.
+        """
+
+        card_widget = self.deck_list.itemWidget(item)
+        if card_widget is None:
+            return
+
+        count = sum(e.quantity for e in entries if e.section in ("commander", "main"))
+        errors = sum(issue.level == "error" for issue in issues)
         mark = "✓" if not errors else "⚠"
 
-        item.setText(
-            f"{self.deck.name}\n{decks.format_label(self.deck.format)} · "
-            f"{count}/{decks.deck_size(self.deck.format)}  {mark}"
+        card_widget.set_texts(
+            deck.name,
+            f"{decks.format_label(deck.format)} · {count}/{decks.deck_size(deck.format)}  {mark}",
         )
         item.setToolTip("Legal" if not errors else plural(errors, "problem"))
+
+        # Selection colors: the commanders' color identity (partners add theirs)
+        commanders = [e.card for e in entries if e.section == "commander"]
+
+        if commanders:
+            identity = set()
+            for commander_card in commanders:
+                identity.update(commander_card.color_identity)
+            card_widget.set_colors(identity_colors(identity))
+        else:
+            card_widget.set_colors(None)
+
+        card_widget.set_selected(item is self.deck_list.currentItem())
+
+        # Illustration of the (first) commander; nothing for decks without one
+        commander = commanders[0] if commanders else None
+        url = art_crop_url(commander.image_url) if commander else None
+
+        if url == getattr(card_widget, "art_url", None):
+            return
+
+        card_widget.art_url = url
+
+        if url is None:
+            card_widget.set_art(None)
+        elif url in self._deck_art:
+            card_widget.set_art(self._deck_art[url])
+        else:
+            self.background.run(
+                lambda: load_card_image(url, width=420, rounded=False),
+                on_success=lambda image: self._on_deck_art_loaded(url, image),
+            )
+
+    def _on_deck_art_loaded(self, url, image):
+
+        if image is None:
+            return
+
+        self._deck_art[url] = image
+
+        # The list may have been redrawn meanwhile: find every row using this art
+        for row in range(self.deck_list.count()):
+            card_widget = self.deck_list.itemWidget(self.deck_list.item(row))
+            if card_widget is not None and getattr(card_widget, "art_url", None) == url:
+                card_widget.set_art(image)
 
     def new_deck(self):
 
