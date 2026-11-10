@@ -423,7 +423,7 @@ Decisiones del autor:
 
 ## Contador de vidas
 
-### Fase 1 hecha (10 nov 2026 — commit PENDING)
+### Fase 1 hecha (10 nov 2026 — commit f6bb60a)
 - Decisiones del autor: por ahora app de escritorio en pantalla vertical normal (sin paneles girados
   ni modo mesa; eso, para la futura versión móvil). Prioridad: que sea funcional, hasta 6 jugadores.
 - Página **Life counter** (sidebar, la última). Barra: jugadores 2-6, vida inicial 20/30/40,
