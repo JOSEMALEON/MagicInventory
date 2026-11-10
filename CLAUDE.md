@@ -30,6 +30,7 @@ services/deck_service.py     -> FORMATS, agrupación por tipo, validate_deck() -
 database/deck_manager.py     -> tablas decks/deck_cards (create_deck_tables) y CRUD de mazos y cartas
 models/deck.py               -> Deck, DeckCard (id, section, card) y SECTIONS/SECTION_LABELS
 src/ui/widgets.py            -> styled_panel(), set_status(label, text, state), printing_text(card, currency),
+                                mana_pixmap(coste, altura) (símbolos de maná con QSvgRenderer; None -> usar texto),
                                 QuantitySpinBox (ignora la rueda sin foco)
 src/ui/background.py         -> BackgroundRunner: run(fn, on_success, on_error) en un QThreadPool (4 hilos); callbacks en el hilo GUI
 src/ui/styles.qss            -> tema oscuro (paleta documentada en la cabecera); @ASSETS@ lo sustituye main.py por la ruta absoluta
@@ -38,6 +39,10 @@ services/card_service.py     -> fachada UI <-> api/database: search_card, get_pr
 services/image_service.py    -> load_card_image(url, w, h) -> QImage (caché en cache/images/<sha1(url)>.jpg); to_pixmap()
 services/list_service.py     -> listas de cartas: parse_card_list, read_list_file (.txt/.csv), resolve_entries,
                                 add_found_cards, export_collection (.csv con precios o .txt reimportable)
+services/symbol_service.py   -> símbolos de maná en SVG: ensure_symbols() (descarga única a cache/symbols/,
+                                8 hilos desde el CDN), symbols_ready, split_mana_cost, symbol_path
+services/bracket_service.py  -> Commander Brackets: listas de Scryfall (is:gamechanger, otag:mass-land-denial,
+                                otag:extra-turn) en cache/brackets.json (semanal) y estimate_bracket()
 services/price_service.py    -> refresh_prices() (completa filas antiguas + precios de toda la colección),
                                 prices_need_update, last_price_update, get_price_changes, format_money
 api/scryfall_api.py          -> búsqueda fuzzy (/cards/named), ediciones (prints_search_uri, o /cards/search
@@ -304,7 +309,12 @@ Decisiones del autor:
   seleccionado lo pinta `DeckListCard` (el `::item:selected` del .qss es transparente): degradado
   con la identidad de color de los comandantes en orden WUBRG + barra de 3 px a la izquierda.
   `MANA_COLORS`: W `#F4E4B0`, U `#3B82F6`, B `#A78BFA` (violeta: negro/gris no se vería sobre el
-  fondo oscuro), R `#F87171`, G `#4ADE80`; incoloro `#94A3B8`; sin comandante, el azul del tema.
+  fondo oscuro), R `#F87171`, G `#4ADE80`; incoloro `#94A3B8`; mazo vacío, el azul del tema.
+- **Mazos sin comandante** (60 cartas, pedido por el autor): usan los **colores del mazo**
+  (`deck_colors()`: main + sideboard) para la selección y para una franja de color en el hueco de la
+  ilustración (`_paint_color_band`). Cuenta los colores que hay que pagar con maná (`_mana_colors`):
+  el maná phyrexiano `{G/P}` **no** cuenta (Mutagenic Growth no hace verde un Izzet; detectado con el
+  mazo real "Izzet Prowess"), los híbridos cuentan ambos colores y las cartas sin coste usan `colors`.
 - **Importar/exportar mazos completos** (adelantado de la fase 3, pedido por el autor):
   - "Import deck…" (DecksPage) abre `ImportDeckDialog` (src/ui/import_deck_dialog.py): pegar o
     cargar .txt/.csv, "Check list", y crea un mazo **nuevo** con `create_deck_from_list()`.
@@ -322,6 +332,40 @@ Decisiones del autor:
     y ediciones exactas (`deck_as_text()`); reimportarlo da un mazo idéntico (probado).
 - Los precios de las cartas del mazo son los del momento de añadirlas (aún no se actualizan con
   "Update prices"; pendiente para la fase 2).
+
+### Hecho (símbolos de maná, 10 nov 2026 — commit PENDING)
+- Pedido por el autor: costes con los símbolos oficiales en vez de "2 W U R".
+- `/symbology` de Scryfall (84 símbolos: híbridos, phyrexianos, {2/W}, {X}, {S}, {15}...) ->
+  `cache/symbols/symbols.json` (símbolo -> archivo) + un .svg por símbolo. Se descargan al arrancar
+  si faltan (`MainWindow`, en segundo plano) y después `_on_symbols_ready()` redibuja.
+- `mana_pixmap()` compone los símbolos en fila (con "//" entre caras), a la resolución real de
+  la pantalla, con caché en memoria. Mientras no estén descargados se muestra el texto.
+- Se usa en la columna Mana del mazo (`MANA_ICON_SIZE` 17, QLabel transparente a clics) y en la
+  pastilla de coste de Search (`SEARCH_MANA_ICON_SIZE` 20). El texto queda en el tooltip.
+
+### Hecho (orden del mazo y brackets, 10 nov 2026 — commit PENDING)
+- Pedido por el autor. **Orden** dentro de cada grupo por tipo: "Sort by" con Mana value ↑/↓,
+  Price ↑/↓ (sin precio al final) y Name (`DECK_SORTS`); se guarda en QSettings (`deck_sort`).
+  DecksPage recibe `settings` desde MainWindow.
+- **Commander Brackets** (reglas WotC, oct. 2025; lista de Game Changers actualizada el
+  9 feb. 2026, 53 cartas; tutores sin restricción desde oct. 2025):
+  B1-2 sin Game Changers, B3 hasta 3, B4-5 sin límite; destrucción masiva de tierras solo B4+;
+  turnos extra restringidos en B1 y sin encadenar en B2-3.
+  - Listas desde búsquedas de Scryfall (siempre al día, sin mantenerlas a mano):
+    `is:gamechanger` (53), `otag:mass-land-denial` (111), `otag:extra-turn` (59) ->
+    `cache/brackets.json`, renovado cada 7 días al arrancar.
+  - `estimate_bracket()` da el bracket **mínimo** que permite el contenido (commander + main):
+    Game Changers 1-3 -> 3, >3 -> 4; destrucción de tierras -> 4; turnos extra -> al menos 2.
+    B1 vs B2 (intención temática) y B4 vs B5 (cEDH) no se pueden deducir: se muestran "1–2"/"4–5".
+    No se comprueban combos de dos cartas ni la velocidad del mazo (se indica).
+  - Insignia "Bracket 3 · Upgraded" junto al valor (verde 1-2, celeste 2, ámbar 3, rojo 4-5) y
+    motivos en el panel lateral ("BRACKET"). Solo en mazos de Commander.
+  - Ojo: Kinnan y otros 9 salieron de la lista en oct. 2025; no fiarse de listas de memoria.
+- **Vista previa al abrir un mazo** (pedido por el autor): `_show_default_preview()` muestra el
+  comandante (Commander) o la primera carta del árbol según el orden elegido (otros formatos), **sin
+  seleccionar la fila** (para que Supr no la borre por accidente). También al añadir la primera carta
+  o un comandante. `_clear_preview()` incrementa `_preview_id` para descartar imágenes que aún se
+  estén descargando de otro mazo (antes una imagen tardía de otro mazo podía colarse).
 
 ## Pendiente
 

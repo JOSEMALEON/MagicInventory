@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QRectF, QSize, Qt
@@ -38,12 +39,14 @@ from services import deck_service as decks
 from services.card_service import ScryfallError, get_printings, is_basic_land, search_card
 from services.image_service import art_crop_url, load_card_image, to_pixmap
 from services.price_service import format_money
+from services.bracket_service import estimate_bracket
 from services.list_service import export_deck
 from src.ui.edition_dialog import EditionDialog
 from src.ui.import_deck_dialog import ImportDeckDialog
 from src.ui.widgets import (
     QuantitySpinBox,
     format_mana_cost,
+    mana_pixmap,
     printing_text,
     set_status,
     styled_panel,
@@ -51,6 +54,26 @@ from src.ui.widgets import (
 
 # Deck tree columns
 COL_QTY, COL_NAME, COL_MANA, COL_EDITION, COL_PRICE = range(5)
+
+# Height of the mana symbols in the deck list
+MANA_ICON_SIZE = 17
+
+
+def _price_key(entry, currency, descending):
+    """Cards without price always go last."""
+    price = entry.card.price(currency)
+    return (price is None, -(price or 0) if descending else (price or 0), entry.name.lower())
+
+
+# Order of the cards inside each group: label -> key(entry, currency)
+DECK_SORTS = {
+    "Mana value ↑": lambda e, cur: (e.card.cmc or 0, e.name.lower()),
+    "Mana value ↓": lambda e, cur: (-(e.card.cmc or 0), e.name.lower()),
+    "Price ↑": lambda e, cur: _price_key(e, cur, descending=False),
+    "Price ↓": lambda e, cur: _price_key(e, cur, descending=True),
+    "Name (A–Z)": lambda e, cur: e.name.lower(),
+}
+DEFAULT_DECK_SORT = "Mana value ↑"
 
 PREVIEW_WIDTH = 230
 PREVIEW_HEIGHT = 320
@@ -100,6 +123,7 @@ class DeckListCard(QWidget):
         # Selection look: painted here so it can use the commander's colors
         self._selected = False
         self._colors = DEFAULT_SELECTION_COLORS
+        self._has_deck_colors = False
 
         self.name_label = QLabel()
         self.name_label.setObjectName("deckCardName")
@@ -136,7 +160,31 @@ class DeckListCard(QWidget):
         blue when the deck has no commander.
         """
         self._colors = colors or DEFAULT_SELECTION_COLORS
+
+        # Decks without commander art show their colors there instead
+        self._has_deck_colors = bool(colors)
         self.update()
+
+    def _paint_color_band(self, painter):
+        """
+        Where the commander's illustration would be: the deck's colors,
+        fading into the background towards the left.
+        """
+
+        colors = [QColor(color) for color in self._colors]
+        width = int(self.width() * self.ART_WIDTH_RATIO)
+        left = self.width() - width
+
+        band = QLinearGradient(left, 0, self.width(), 0)
+        band.setColorAt(0.0, _with_alpha(colors[0], 0))
+
+        last = len(colors) - 1
+        for index, color in enumerate(colors):
+            stop = 0.45 if last == 0 else 0.35 + 0.65 * index / last
+            band.setColorAt(stop, _with_alpha(color, 70))
+
+        band.setColorAt(1.0, _with_alpha(colors[-1], 95))
+        painter.fillRect(left, 0, width, self.height(), band)
 
     def _paint_selection(self, painter):
         """
@@ -207,7 +255,9 @@ class DeckListCard(QWidget):
 
     def paintEvent(self, event):
 
-        if self._selected or self._faded is not None:
+        color_band = self._faded is None and self._has_deck_colors
+
+        if self._selected or self._faded is not None or color_band:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -221,6 +271,8 @@ class DeckListCard(QWidget):
 
             if self._faded is not None:
                 painter.drawImage(self.width() - self._faded.width(), 0, self._faded)
+            elif color_band:
+                self._paint_color_band(painter)
 
             painter.end()
 
@@ -231,6 +283,47 @@ def _with_alpha(color, alpha):
     result = QColor(color)
     result.setAlpha(alpha)
     return result
+
+
+def deck_colors(entries):
+    """
+    Selector colors for decks without commander: the colors of the cards in
+    the main deck and sideboard (a land that taps for red doesn't make the
+    deck red). Only colorless cards -> grey; empty deck -> None (theme blue).
+    """
+
+    playing = [entry for entry in entries if entry.section in ("main", "sideboard")]
+
+    if not playing:
+        return None
+
+    colors = set()
+    for entry in playing:
+        colors.update(_mana_colors(entry.card))
+
+    return identity_colors(colors)
+
+
+def _mana_colors(card):
+    """
+    Colors you need mana of to cast the card. Phyrexian symbols ({G/P}) can
+    be paid with life, so they don't count: Mutagenic Growth doesn't make an
+    Izzet deck green. Hybrid symbols ({W/U}) count both colors. Cards with
+    no mana cost (Ancestral Vision...) keep their colors.
+    """
+
+    if not card.mana_cost:
+        return set(card.colors or [])
+
+    colors = set()
+
+    for symbol in re.findall(r"\{([^}]+)\}", card.mana_cost):
+        parts = symbol.split("/")
+        if "P" in parts:
+            continue
+        colors.update(part for part in parts if part in WUBRG)
+
+    return colors
 
 
 def identity_colors(color_identity):
@@ -320,11 +413,14 @@ class DecksPage(QWidget):
     (add cards, cards grouped by type, preview and format checks).
     """
 
-    def __init__(self, background, get_currency):
+    def __init__(self, background, get_currency, settings=None):
         super().__init__()
 
         self.background = background
         self.get_currency = get_currency
+
+        # Remembers the chosen card order between sessions (QSettings)
+        self.settings = settings
 
         self.deck = None          # open Deck
         self.entries = []         # its DeckCard lines
@@ -443,6 +539,10 @@ class DecksPage(QWidget):
         self.deck_value_label = QLabel()
         self.deck_value_label.setObjectName("mutedLabel")
 
+        # "Bracket 3 · Upgraded" (Commander decks only)
+        self.bracket_label = QLabel()
+        self.bracket_label.setObjectName("bracketBadge")
+
         export_button = QPushButton("Export…")
         export_button.setCursor(Qt.CursorShape.PointingHandCursor)
         export_button.setToolTip("Save this deck as a text list (Moxfield / Arena format)")
@@ -455,6 +555,7 @@ class DecksPage(QWidget):
         header.addWidget(export_button)
         header.addStretch()
         header.addWidget(self.deck_value_label)
+        header.addWidget(self.bracket_label)
         header.addWidget(self.count_label)
         header.addWidget(self.validity_label)
 
@@ -543,7 +644,7 @@ class DecksPage(QWidget):
         tree_header.setSectionResizeMode(COL_EDITION, QHeaderView.ResizeMode.Interactive)
         tree_header.setSectionResizeMode(COL_PRICE, QHeaderView.ResizeMode.Fixed)
         tree.setColumnWidth(COL_QTY, 90)
-        tree.setColumnWidth(COL_MANA, 90)
+        tree.setColumnWidth(COL_MANA, 130)
         tree.setColumnWidth(COL_EDITION, 150)
         tree.setColumnWidth(COL_PRICE, 75)
 
@@ -574,12 +675,53 @@ class DecksPage(QWidget):
         side.addWidget(checks_caption)
         side.addWidget(self.issue_list, 1)
 
+        # Why the deck is in its bracket (Commander decks only)
+        self.bracket_caption = QLabel("BRACKET")
+        self.bracket_caption.setObjectName("fieldLabel")
+
+        self.bracket_details = QLabel()
+        self.bracket_details.setObjectName("bracketDetails")
+        self.bracket_details.setWordWrap(True)
+        self.bracket_details.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+        side.addWidget(self.bracket_caption)
+        side.addWidget(self.bracket_details)
+
         side_panel = styled_panel("cardPanel", side)
         side_panel.setFixedWidth(PREVIEW_WIDTH + 32)
 
+        # ---------- Card order ----------
+
+        sort_label = QLabel("Sort by")
+        sort_label.setObjectName("mutedLabel")
+
+        self.sort_input = QComboBox()
+        self.sort_input.addItems(list(DECK_SORTS))
+
+        saved_sort = self.settings.value("deck_sort", DEFAULT_DECK_SORT) if self.settings else DEFAULT_DECK_SORT
+        if saved_sort in DECK_SORTS:
+            self.sort_input.setCurrentText(saved_sort)
+
+        self.sort_input.currentTextChanged.connect(self._on_sort_changed)
+
+        grouped_label = QLabel("Cards grouped by type")
+        grouped_label.setObjectName("mutedLabel")
+
+        sort_row = QHBoxLayout()
+        sort_row.setSpacing(10)
+        sort_row.addWidget(grouped_label)
+        sort_row.addStretch()
+        sort_row.addWidget(sort_label)
+        sort_row.addWidget(self.sort_input)
+
+        tree_column = QVBoxLayout()
+        tree_column.setSpacing(8)
+        tree_column.addLayout(sort_row)
+        tree_column.addWidget(tree, 1)
+
         body = QHBoxLayout()
         body.setSpacing(16)
-        body.addWidget(tree, 1)
+        body.addLayout(tree_column, 1)
         body.addWidget(side_panel)
 
         layout = QVBoxLayout()
@@ -691,7 +833,7 @@ class DecksPage(QWidget):
                 identity.update(commander_card.color_identity)
             card_widget.set_colors(identity_colors(identity))
         else:
-            card_widget.set_colors(None)
+            card_widget.set_colors(deck_colors(entries))
 
         card_widget.set_selected(item is self.deck_list.currentItem())
 
@@ -834,10 +976,12 @@ class DecksPage(QWidget):
         if changed_deck:
             self._clear_found()
             set_status(self.status_label, "")
-            self.preview.clear()
-            self.preview.setText("Select a card")
+            self.tree.clearSelection()
 
         self.refresh_deck()
+
+        if changed_deck:
+            self._show_default_preview()
 
     def refresh_deck(self):
         """
@@ -876,6 +1020,48 @@ class DecksPage(QWidget):
         playing = [e for e in self.entries if e.section in ("commander", "main")]
         value = sum(e.card.value(currency) or 0 for e in playing)
         self.deck_value_label.setText(f"Value {format_money(value, currency)}")
+
+        self._update_bracket()
+
+    def _update_bracket(self):
+        """
+        Commander Bracket estimate next to the deck value, with the reasons
+        in the side panel. Hidden for 60-card formats.
+        """
+
+        is_commander = decks.is_commander_format(self.deck.format)
+
+        for widget in (self.bracket_label, self.bracket_caption, self.bracket_details):
+            widget.setVisible(is_commander)
+
+        if not is_commander:
+            return
+
+        estimate = estimate_bracket(self.entries)
+
+        if estimate is None:
+            # The Game Changers list is still downloading
+            self.bracket_label.setText("Bracket …")
+            self.bracket_label.setProperty("bracket", "")
+            self.bracket_label.setToolTip("Downloading the Game Changers list…")
+            self.bracket_details.setText("Downloading the Game Changers list…")
+        else:
+            self.bracket_label.setText(estimate.label)
+            self.bracket_label.setProperty("bracket", str(estimate.bracket))
+            details = "\n".join(f"• {reason}" for reason in estimate.reasons)
+            self.bracket_label.setToolTip(details)
+            self.bracket_details.setText(details)
+
+        # Re-apply the stylesheet: the color depends on the "bracket" property
+        self.bracket_label.style().unpolish(self.bracket_label)
+        self.bracket_label.style().polish(self.bracket_label)
+
+    def _on_sort_changed(self, text):
+
+        if self.settings is not None:
+            self.settings.setValue("deck_sort", text)
+
+        self._fill_tree()
 
     def _fill_issues(self):
 
@@ -928,7 +1114,9 @@ class DecksPage(QWidget):
             tree.addTopLevelItem(group)
             group.setFirstColumnSpanned(True)
 
-            for entry in sorted(entries, key=lambda e: ((e.card.cmc or 0), e.name)):
+            sort_key = DECK_SORTS.get(self.sort_input.currentText(), DECK_SORTS[DEFAULT_DECK_SORT])
+
+            for entry in sorted(entries, key=lambda e: sort_key(e, currency)):
                 card = entry.card
 
                 item = QTreeWidgetItem([
@@ -946,6 +1134,13 @@ class DecksPage(QWidget):
 
                 tree.setItemWidget(item, COL_QTY, self._quantity_cell(entry))
 
+                # Mana symbols instead of "2 W U" when they are downloaded
+                symbols = mana_pixmap(card.mana_cost, height=MANA_ICON_SIZE)
+                if symbols is not None:
+                    item.setText(COL_MANA, "")
+                    item.setToolTip(COL_MANA, format_mana_cost(card.mana_cost, empty=""))
+                    tree.setItemWidget(item, COL_MANA, self._mana_cell(symbols))
+
                 if entry.id == current_id:
                     tree.setCurrentItem(item, COL_NAME, QItemSelectionModel.SelectionFlag.NoUpdate)
 
@@ -953,6 +1148,16 @@ class DecksPage(QWidget):
                     item.setSelected(True)
 
             group.setExpanded(True)
+
+    def _mana_cell(self, pixmap):
+
+        label = QLabel()
+        label.setPixmap(pixmap)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        # Let clicks reach the row (select / context menu / double click)
+        label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        label.setContentsMargins(4, 0, 0, 0)
+        return label
 
     def _quantity_cell(self, entry):
 
@@ -1036,8 +1241,46 @@ class DecksPage(QWidget):
         line_id = current.data(COL_NAME, Qt.ItemDataRole.UserRole)
         entry = next((e for e in self.entries if e.id == line_id), None)
 
-        if entry is None:
+        if entry is not None:
+            self._show_preview(entry)
+
+    def _show_default_preview(self):
+        """
+        When a deck is opened: show its commander (Commander decks) or the
+        first card of the list (other formats). The row is not selected, so
+        pressing Delete can't remove it by accident.
+        """
+
+        commander = next((e for e in self.entries if e.section == "commander"), None)
+
+        if commander is not None:
+            self._show_preview(commander)
             return
+
+        # First card as shown in the tree (groups and chosen order)
+        for index in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(index)
+            if group.childCount():
+                line_id = group.child(0).data(COL_NAME, Qt.ItemDataRole.UserRole)
+                entry = next((e for e in self.entries if e.id == line_id), None)
+                if entry is not None:
+                    self._show_preview(entry)
+                    return
+
+        self._clear_preview()
+
+    def _clear_preview(self):
+
+        # Discard any image still loading (it belongs to another deck/card)
+        self._preview_id += 1
+        self.preview.clear()
+        self.preview.setText("Select a card")
+
+    def _preview_is_empty(self):
+        pixmap = self.preview.pixmap()
+        return pixmap is None or pixmap.isNull()
+
+    def _show_preview(self, entry):
 
         self._preview_id += 1
         preview_id = self._preview_id
@@ -1261,6 +1504,10 @@ class DecksPage(QWidget):
         self.add_input.clear()
         self.add_input.setFocus()
         self.refresh_deck()
+
+        # First card of an empty deck, or a new commander: show it
+        if self._preview_is_empty() or section == "commander":
+            self._show_default_preview()
 
         set_status(
             self.status_label,

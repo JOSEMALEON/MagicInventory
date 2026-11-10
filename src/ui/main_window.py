@@ -38,6 +38,11 @@ from services.card_service import (
 )
 from services.image_service import load_card_image, to_pixmap
 from services.list_service import export_collection as save_collection_file
+from services.symbol_service import ensure_symbols, symbols_ready
+from services.bracket_service import (
+    lists_need_update as bracket_lists_need_update,
+    update_lists as update_bracket_lists,
+)
 from services.price_service import (
     refresh_prices,
     prices_need_update,
@@ -54,6 +59,7 @@ from src.ui.decks_page import DecksPage
 from src.ui.widgets import (
     QuantitySpinBox,
     format_mana_cost,
+    mana_pixmap,
     printing_text,
     set_status,
     styled_panel,
@@ -72,6 +78,9 @@ THUMB_HEIGHT = 126
 COL_IMAGE, COL_NAME, COL_EDITION, COL_RARITY, COL_PRICE, COL_QUANTITY, COL_VALUE = range(7)
 
 CURRENCIES = ["EUR", "USD"]
+
+# Height of the mana symbols on the search page
+SEARCH_MANA_ICON_SIZE = 20
 
 EXPORT_CSV_FILTER = "CSV spreadsheet with prices (*.csv)"
 EXPORT_TXT_FILTER = "Text list, can be imported again (*.txt)"
@@ -204,7 +213,9 @@ class MainWindow(QWidget):
         self.pages.addWidget(self.search_page)
         self.pages.addWidget(self.collection_page)
 
-        self.decks_page = DecksPage(self.background, get_currency=lambda: self.currency)
+        self.decks_page = DecksPage(
+            self.background, get_currency=lambda: self.currency, settings=self.settings
+        )
         self.pages.addWidget(self.decks_page)
 
         body_layout.addWidget(self._build_sidebar())
@@ -222,6 +233,17 @@ class MainWindow(QWidget):
         # Scryfall updates prices daily: refresh them if they are old
         if self.collection_cards and prices_need_update(self.collection_cards):
             self.update_prices()
+
+        # Mana symbols: downloaded once, then read from cache/symbols/
+        if not symbols_ready():
+            self.background.run(ensure_symbols, on_success=self._on_symbols_ready)
+
+        # Commander Brackets card lists (Game Changers...): refreshed weekly
+        if bracket_lists_need_update():
+            self.background.run(
+                update_bracket_lists,
+                on_success=lambda changed: self.decks_page.refresh_deck(),
+            )
 
     # ==================================
     # LAYOUT BUILDERS
@@ -816,13 +838,41 @@ class MainWindow(QWidget):
 
         self.card_name.setText(card.name)
         self.card_type.setText(card.type_line or "")
-        self.card_mana.setText(format_mana_cost(card.mana_cost))
+        self._update_mana_badge()
         self.card_mana.show()
         self.card_set.setText(card.printing_label)
         self._set_rarity(card.rarity)
         self._update_price_badge()
         self._update_owned_label()
         self.save_button.setEnabled(True)
+
+    def _update_mana_badge(self):
+        """
+        Mana cost of the shown card with Scryfall's symbols, or as text
+        ("2 U U") while the symbols aren't downloaded.
+        """
+
+        card = self.current_card
+        if card is None:
+            return
+
+        symbols = mana_pixmap(card.mana_cost, height=SEARCH_MANA_ICON_SIZE)
+
+        if symbols is not None:
+            self.card_mana.setPixmap(symbols)
+            self.card_mana.setToolTip(format_mana_cost(card.mana_cost))
+        else:
+            self.card_mana.setText(format_mana_cost(card.mana_cost))
+            self.card_mana.setToolTip("")
+
+    def _on_symbols_ready(self, downloaded):
+        """The mana symbols are on disk now: redraw what shows mana costs."""
+
+        if not downloaded:
+            return
+
+        self._update_mana_badge()
+        self.decks_page.refresh_deck()
 
     def _update_price_badge(self):
 

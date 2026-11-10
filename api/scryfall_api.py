@@ -24,6 +24,7 @@ SCRYFALL_NAMED_URL = "https://api.scryfall.com/cards/named"
 SCRYFALL_SEARCH_URL = "https://api.scryfall.com/cards/search"
 SCRYFALL_COLLECTION_URL = "https://api.scryfall.com/cards/collection"
 SCRYFALL_SETS_URL = "https://api.scryfall.com/sets"
+SCRYFALL_SYMBOLOGY_URL = "https://api.scryfall.com/symbology"
 
 # /cards/collection accepts at most 75 identifiers per request
 COLLECTION_BATCH_SIZE = 75
@@ -250,6 +251,44 @@ def get_cards_by_identifiers(identifiers):
                 results.append((identifier, _card_from_json(next(found))))
 
     return results
+
+
+def search_card_names(query):
+    """
+    Names of every card matching a Scryfall search (one per card, not per
+    printing), e.g. "is:gamechanger". Empty list if nothing matches.
+    Raise ScryfallError if a request fails.
+    """
+
+    names = []
+    url, params = SCRYFALL_SEARCH_URL, {"q": query, "unique": "cards"}
+
+    while url:
+        data = _get_json(url, params=params)
+        if data is None:
+            break
+
+        names.extend(item["name"] for item in data.get("data", []) if item.get("name"))
+
+        url = data.get("next_page") if data.get("has_more") else None
+        params = None
+
+    return names
+
+
+def get_symbology():
+    """
+    Return {"{W}": "https://svgs.scryfall.io/card-symbols/W.svg", ...} with
+    every symbol Scryfall knows (mana, tap, energy...).
+    """
+
+    data = _get_json(SCRYFALL_SYMBOLOGY_URL) or {}
+
+    return {
+        item["symbol"]: item["svg_uri"]
+        for item in data.get("data", [])
+        if item.get("symbol") and item.get("svg_uri")
+    }
 
 
 def get_set_codes():

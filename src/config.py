@@ -15,6 +15,9 @@ ASSETS_DIR = BASE_DIR / "assets"
 # Downloaded card images, so each one is only downloaded once
 IMAGE_CACHE_DIR = BASE_DIR / "cache" / "images"
 
+# Mana symbols ({W}, {2}, {G/P}...) as SVG files, downloaded once from Scryfall
+SYMBOL_CACHE_DIR = BASE_DIR / "cache" / "symbols"
+
 # =============================
 # NETWORK
 # =============================
