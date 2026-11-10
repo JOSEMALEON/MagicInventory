@@ -19,6 +19,11 @@ class Card:
         price_usd=None,
         price_usd_foil=None,
         prices_updated_at=None,
+        cmc=None,
+        colors=None,
+        color_identity=None,
+        legalities=None,
+        oracle_text=None,
     ):
 
         self.name = name
@@ -47,6 +52,13 @@ class Card:
         self.price_usd_foil = price_usd_foil
         # ISO date-time of the last price update (None if never updated)
         self.prices_updated_at = prices_updated_at
+
+        # Gameplay data used by the deck builder
+        self.cmc = cmc                                  # mana value, e.g. 3.0
+        self.colors = colors or []                      # e.g. ["U", "R"]
+        self.color_identity = color_identity or []      # e.g. ["U", "R", "G"]
+        self.legalities = legalities or {}              # e.g. {"commander": "legal", ...}
+        self.oracle_text = oracle_text or ""            # rules text (faces joined by "//")
 
 
     def price(self, currency="EUR"):

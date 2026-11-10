@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from services.card_service import get_printings
+from services.card_service import get_all_printings
 from services.image_service import load_card_image, to_pixmap
 from src.ui.widgets import printing_text, set_status
 
@@ -109,7 +109,7 @@ class EditionDialog(QDialog):
         self._load_image(card)
 
         self.background.run(
-            lambda: get_printings(card),
+            lambda: get_all_printings(card),
             on_success=self._on_printings_loaded,
             on_error=self._on_printings_error,
         )

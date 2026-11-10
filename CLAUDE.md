@@ -24,6 +24,10 @@ src/config.py                -> rutas absolutas (BASE_DIR, DB_PATH, STYLES_PATH,
 src/ui/main_window.py        -> ventana: topbar, sidebar, páginas Search (panel de carta) y Collection (tabla + gestión)
 src/ui/edition_dialog.py     -> EditionDialog: elegir otra edición para una carta de la colección (con vista previa)
 src/ui/import_page.py        -> ImportPage: pegar/cargar una lista, comprobarla en Scryfall y añadir las cartas
+src/ui/decks_page.py         -> DecksPage (lista de mazos + mazo abierto) y NewDeckDialog
+services/deck_service.py     -> FORMATS, agrupación por tipo, validate_deck() -> [DeckIssue], fachada de mazos
+database/deck_manager.py     -> tablas decks/deck_cards (create_deck_tables) y CRUD de mazos y cartas
+models/deck.py               -> Deck, DeckCard (id, section, card) y SECTIONS/SECTION_LABELS
 src/ui/widgets.py            -> styled_panel(), set_status(label, text, state), printing_text(card, currency),
                                 QuantitySpinBox (ignora la rueda sin foco)
 src/ui/background.py         -> BackgroundRunner: run(fn, on_success, on_error) en un QThreadPool (4 hilos); callbacks en el hilo GUI
@@ -81,6 +85,12 @@ Tabla `price_history`: `scryfall_id, date, price_eur, price_eur_foil, price_usd,
 - Toda petición HTTP lleva `headers=HTTP_HEADERS` y `timeout=REQUEST_TIMEOUT` (Scryfall exige
   User-Agent y Accept, y pide no superar ~10 peticiones/segundo).
 - Errores de red de Scryfall -> `ScryfallError`; carta no encontrada -> `None`.
+- **Límite de Scryfall:** todas las peticiones a la API pasan por `_request()` en `scryfall_api.py`,
+  que espera su turno entre hilos: 0,5 s entre búsquedas (`/cards/search`, `/cards/named`,
+  `/cards/collection`, `/cards/random`: máx. 2/s) y 0,1 s para el resto. Un 429 espera
+  `Retry-After` y reintenta una vez. No añadir `time.sleep` manuales. (Las imágenes van al CDN
+  `cards.scryfall.io`, que no tiene este límite.)
+- SQLite con `PRAGMA foreign_keys = ON` en cada conexión (borrar un mazo borra sus cartas).
 - Nunca rutas relativas: usar las de `src/config.py`.
 - Nada de red ni disco lento en el hilo GUI: usar `self.background.run(...)`. En el hilo de trabajo
   no se tocan widgets ni `QPixmap` (solo `QImage`). Las respuestas llevan un contador
@@ -186,8 +196,110 @@ Tabla `price_history`: `scryfall_id, date, price_eur, price_eur_foil, price_usd,
   Crystal Skull Isu Spyglass, Golbez Crystal Collector, Illustrious Wanderglyph, Iron Spider Stark
   Upgrade, The Cyber-Controller, Uthros Research Craft, Worldwalker Helm, Wurmcoil Engine.
 
+## Deck builder — bases acordadas (10 nov 2026)
+
+Decisiones del autor:
+- **Formatos:** Commander + formatos de 60 cartas (Standard, Pioneer, Modern, Legacy, Vintage, Pauper).
+- **Relación con la colección:** los mazos son **independientes**; se puede añadir cualquier carta.
+  El mazo indica qué cartas tienes, cuáles faltan y cuánto cuesta comprarlas. La colección no cambia.
+- **Añadir cartas:** las tres vías — buscar en Scryfall, "Add to deck…" desde la colección, e
+  importar/exportar listas (reutilizando `list_service`).
+- **Extras v1:** validación del formato, curva de maná y colores, precio del mazo y de lo que falta,
+  vista visual agrupada por tipos con miniaturas.
+
+### Modelo de datos (propuesto)
+- `decks`: `id, name, format, notes, created_at, updated_at`.
+- `deck_cards`: `id, deck_id, scryfall_id, quantity, section` + datos de la carta guardados igual
+  que en `cards` (name, set, type_line, mana_cost, rarity, image_url, precios) **más** `cmc`,
+  `colors`, `color_identity`, `legalities` (JSON) y `oracle_text`. Índice único
+  `(deck_id, scryfall_id, section)`. `ON DELETE CASCADE` desde `decks`.
+- `section`: `commander` | `main` | `sideboard` | `maybeboard`.
+- `Card` gana `cmc`, `colors`, `color_identity`, `legalities`, `oracle_text`
+  (de Scryfall; la colección no los necesita guardar por ahora).
+- **"La tengo"** se decide **por nombre** (cualquier edición de la colección cuenta), sumando copias.
+  Si el mazo pide 4 y tienes 2, faltan 2 (la carta cuenta como "parcialmente en la colección").
+
+### Apartado "Not in collection" (pedido por el autor)
+- Es una **vista calculada, no una sección guardada**: cada carta sigue en su sección real
+  (commander/main/sideboard/maybeboard) y aparece además aquí si faltan copias.
+- Se recalcula al abrir el mazo y cada vez que cambia la colección (al añadir la carta a la
+  colección, desaparece sola del apartado).
+- Opción dentro de la pestaña del mazo (interruptor **"Show only cards I don't own"**) que filtra la
+  vista y muestra solo las cartas que faltan, con cuántas copias faltan y su precio.
+- Cabecera del apartado: "Missing: N cards · €X". Se puede exportar como lista de compra (.txt/.csv).
+- Maybeboard no cuenta para el total de lo que falta.
+
+### Botón "Got it" en las cartas que faltan (pedido por el autor)
+- Cada carta del apartado tiene un botón **"Got it…"** para registrar las copias que vas comprando.
+- Abre un pequeño diálogo: "How many copies of Sol Ring did you get?" con un contador (por defecto
+  = las que faltan, mínimo 1; se permite poner más) y la **edición** que se añade (por defecto la
+  del mazo; se puede cambiar, con precios, reutilizando el selector de ediciones).
+- Al confirmar, esas copias **se añaden a la colección** (`add_card`, se suman si ya tienes esa
+  edición) y el apartado se recalcula: faltaban 2 Sol Ring, compras 1 -> queda "falta 1";
+  compras 2 -> desaparece del apartado.
+- Mensaje de confirmación: "Added 1 × Sol Ring to your collection. 1 still missing."
+- Extra: "Got all" en la cabecera del apartado para marcar todas las que faltan de golpe
+  (con confirmación).
+
+### Reglas de validación
+| Regla | Commander | 60 cartas |
+|---|---|---|
+| Tamaño | exactamente 100 (comandante incluido) | main ≥ 60, sideboard ≤ 15 |
+| Copias | 1 de cada (singleton) | máx. 4 por nombre (main + side) |
+| Excepciones | tierras básicas y cartas con "A deck can have any number of cards named…" (vía `oracle_text`) | ídem |
+| Legalidad | `legalities["commander"]` debe ser `legal` | `legalities[formato]` = `legal` (o `restricted` = máx. 1 en Vintage) |
+| Color | toda carta dentro de la identidad de color del comandante | — |
+| Comandante | 1 (o 2 con *Partner*/*Background*: se avisa, no se bloquea) | — |
+- La validación **avisa, no bloquea**: se puede guardar un mazo incompleto o ilegal (se está construyendo).
+- Maybeboard no cuenta para nada.
+
+### Interfaz
+- Sidebar: Search, Import cards, Collection, **Decks**.
+- Página Decks: columna izquierda con la lista de mazos (nombre, formato, nº cartas, ✓/⚠) y botones
+  New / Rename / Delete; a la derecha el mazo abierto:
+  - Cabecera: nombre, formato, contador ("87/100"), valor total y "Missing: N cards · €X".
+  - Buscador para añadir cartas (con ediciones y precios, como Search) y "Import list…/Export…".
+  - Vista **por tipos** (Commander, Creatures, Planeswalkers, Instants, Sorceries, Artifacts,
+    Enchantments, Battles, Lands) en modo lista o modo visual con miniaturas.
+  - Cada carta: cantidad editable, sección, marca ✓ tengo / ✗ falta, precio.
+  - Panel lateral: avisos de validación, curva de maná (barras 0..7+), colores y tipos.
+- Gráficos dibujados con `QPainter` en un widget propio (sin dependencias nuevas), con los colores del tema.
+- Colección: "Add to deck…" en el menú contextual y en la barra de acciones.
+
+### Fases de implementación
+1. **Base:** tablas + migración, `deck_service`, página Decks con crear/renombrar/borrar mazos,
+   añadir por búsqueda, cantidades/secciones, vista lista por tipos, validación.
+2. **Análisis:** curva de maná, colores, tipos, valor del mazo, tengo/falta, apartado
+   "Not in collection" con el interruptor "Show only cards I don't own", coste de lo que falta y
+   botón "Got it…" para pasar a la colección las copias compradas.
+3. **Integración:** "Add to deck…" desde la colección, importar/exportar listas del mazo,
+   vista visual con miniaturas.
+
+### Fase 1 hecha (10 nov 2026 — pendiente de commit)
+- Tablas `decks` y `deck_cards` (con `ON DELETE CASCADE` e índice único deck+printing+sección).
+  `Card` y `_card_from_json` ganan `cmc`, `colors`, `color_identity`, `legalities`, `oracle_text`.
+- Página **Decks** (sidebar, debajo de Collection): lista de mazos con "Formato · 53/100 ✓/⚠",
+  New deck (nombre + formato) / Rename / Delete (con confirmación).
+- Mazo abierto: cambiar formato, contador, insignia "✓ Legal"/"⚠ N problems", valor del mazo;
+  buscador "Add a card…" con edición (con precios), cantidad y sección (sugiere Commander si el
+  mazo de Commander no tiene comandante y la carta puede serlo).
+- Cartas agrupadas: Commander, Creatures, Planeswalkers, Battles, Instants, Sorceries, Artifacts,
+  Enchantments, Lands, Other, Sideboard, Maybeboard; ordenadas por coste. Cantidad editable,
+  menú contextual (Move to…, Change edition…, Remove), Supr, doble clic = cambiar edición,
+  vista previa de la carta seleccionada y lista "FORMAT CHECKS".
+- Validación probada con cartas reales: tamaño, singleton/4 copias, básicas y Relentless Rats
+  ilimitadas, Seven Dwarves máx. 7, prohibidas/no legales, identidad de color, parejas de
+  comandantes (Partner/Background/Friends forever), banquillo ≤ 15.
+- **Tierras básicas** (`is_basic_land()` en card_service): `get_printings()` solo carga la primera
+  página de ediciones (las ~175 más recientes, 1 petición, ~0,5 s en vez de ~3,5 s con las ~930 de
+  Swamp) y se preselecciona la más reciente, en el buscador del mazo y en Search. El diálogo
+  "Change edition…" usa `get_all_printings()` (todas).
+- Los precios de las cartas del mazo son los del momento de añadirlas (aún no se actualizan con
+  "Update prices"; pendiente para la fase 2).
+
 ## Pendiente
 
+- **Deck builder:** fases 2 y 3 (y que "Update prices" actualice también las cartas de los mazos).
 - Ideas de mejora: deshacer el último borrado; mostrar colores de rareza también en
   filas seleccionadas; guardar el filtro entre sesiones; marcar copias foil (precio foil).
 

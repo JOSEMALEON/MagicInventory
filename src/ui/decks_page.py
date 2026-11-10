@@ -1,0 +1,950 @@
+from PySide6.QtCore import QItemSelectionModel, Qt
+from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QStackedWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from services import deck_service as decks
+from services.card_service import ScryfallError, get_printings, is_basic_land, search_card
+from services.image_service import load_card_image, to_pixmap
+from services.price_service import format_money
+from src.ui.edition_dialog import EditionDialog
+from src.ui.widgets import (
+    QuantitySpinBox,
+    format_mana_cost,
+    printing_text,
+    set_status,
+    styled_panel,
+)
+
+# Deck tree columns
+COL_QTY, COL_NAME, COL_MANA, COL_EDITION, COL_PRICE = range(5)
+
+PREVIEW_WIDTH = 230
+PREVIEW_HEIGHT = 320
+
+ERROR_COLOR = "#F87171"
+WARNING_COLOR = "#FBBF24"
+OK_COLOR = "#4ADE80"
+
+
+def plural(count, word):
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+class NewDeckDialog(QDialog):
+    """Ask for the name and format of a new deck."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle("New deck")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+
+        title = QLabel("New deck")
+        title.setObjectName("dialogTitle")
+
+        name_label = QLabel("NAME")
+        name_label.setObjectName("fieldLabel")
+
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("e.g. Golbez artifacts")
+        self.name_input.textChanged.connect(self._update_button)
+
+        format_label = QLabel("FORMAT")
+        format_label.setObjectName("fieldLabel")
+
+        self.format_input = QComboBox()
+        for key, rules in decks.FORMATS.items():
+            self.format_input.addItem(rules["label"], key)
+
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+
+        self.create_button = QPushButton("Create")
+        self.create_button.setObjectName("primaryButton")
+        self.create_button.setEnabled(False)
+        self.create_button.setDefault(True)
+        self.create_button.clicked.connect(self.accept)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(cancel)
+        buttons.addWidget(self.create_button)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(8)
+        layout.addWidget(title)
+        layout.addSpacing(8)
+        layout.addWidget(name_label)
+        layout.addWidget(self.name_input)
+        layout.addSpacing(6)
+        layout.addWidget(format_label)
+        layout.addWidget(self.format_input)
+        layout.addSpacing(14)
+        layout.addLayout(buttons)
+        self.setLayout(layout)
+
+    def _update_button(self):
+        self.create_button.setEnabled(bool(self.name_input.text().strip()))
+
+    @property
+    def deck_name(self):
+        return self.name_input.text().strip()
+
+    @property
+    def deck_format(self):
+        return self.format_input.currentData()
+
+
+class DecksPage(QWidget):
+    """
+    Deck builder: list of decks on the left, the open deck on the right
+    (add cards, cards grouped by type, preview and format checks).
+    """
+
+    def __init__(self, background, get_currency):
+        super().__init__()
+
+        self.background = background
+        self.get_currency = get_currency
+
+        self.deck = None          # open Deck
+        self.entries = []         # its DeckCard lines
+        self.issues = []          # its validation messages
+        self.found_printings = [] # editions of the card being added
+
+        # Ignore answers that arrive after a newer request
+        self._search_id = 0
+        self._preview_id = 0
+
+        columns = QHBoxLayout()
+        columns.setSpacing(20)
+        columns.addWidget(self._build_deck_list())
+
+        self.right_stack = QStackedWidget()
+        self.right_stack.addWidget(self._build_empty_state())
+        self.right_stack.addWidget(self._build_deck_view())
+        columns.addWidget(self.right_stack, 1)
+
+        page_layout = QVBoxLayout()
+        page_layout.setContentsMargins(32, 28, 32, 28)
+        page_layout.setSpacing(14)
+
+        title = QLabel("Decks")
+        title.setObjectName("pageTitle")
+
+        page_layout.addWidget(title)
+        page_layout.addLayout(columns, 1)
+        self.setLayout(page_layout)
+
+        self.load_decks()
+
+    # ==================================
+    # LAYOUT
+    # ==================================
+
+    def _build_deck_list(self):
+
+        caption = QLabel("MY DECKS")
+        caption.setObjectName("fieldLabel")
+
+        self.deck_list = QListWidget()
+        self.deck_list.setObjectName("deckList")
+        self.deck_list.currentItemChanged.connect(self._on_deck_selected)
+
+        new_button = QPushButton("New deck")
+        new_button.setObjectName("primaryButton")
+        new_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        new_button.clicked.connect(self.new_deck)
+
+        self.rename_button = QPushButton("Rename")
+        self.rename_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.rename_button.clicked.connect(self.rename_deck)
+
+        self.delete_deck_button = QPushButton("Delete")
+        self.delete_deck_button.setObjectName("dangerButton")
+        self.delete_deck_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_deck_button.clicked.connect(self.delete_deck)
+
+        small_buttons = QHBoxLayout()
+        small_buttons.setSpacing(8)
+        small_buttons.addWidget(self.rename_button)
+        small_buttons.addWidget(self.delete_deck_button)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(caption)
+        layout.addWidget(self.deck_list, 1)
+        layout.addWidget(new_button)
+        layout.addLayout(small_buttons)
+
+        panel = styled_panel("cardPanel", layout)
+        panel.setFixedWidth(270)
+        return panel
+
+    def _build_empty_state(self):
+
+        message = QLabel("Create your first deck with “New deck”.")
+        message.setObjectName("mutedLabel")
+        message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout = QVBoxLayout()
+        layout.addWidget(message)
+        return styled_panel("cardPanel", layout)
+
+    def _build_deck_view(self):
+
+        # ---------- Header ----------
+
+        self.deck_title = QLabel()
+        self.deck_title.setObjectName("deckTitle")
+
+        self.format_input = QComboBox()
+        for key, rules in decks.FORMATS.items():
+            self.format_input.addItem(rules["label"], key)
+        self.format_input.currentIndexChanged.connect(self._on_format_changed)
+
+        # "53 / 100 cards"
+        self.count_label = QLabel()
+        self.count_label.setObjectName("deckCount")
+
+        # "✓ Legal" / "⚠ 6 problems"
+        self.validity_label = QLabel()
+        self.validity_label.setObjectName("validityBadge")
+
+        self.deck_value_label = QLabel()
+        self.deck_value_label.setObjectName("mutedLabel")
+
+        header = QHBoxLayout()
+        header.setSpacing(14)
+        header.addWidget(self.deck_title)
+        header.addWidget(self.format_input)
+        header.addStretch()
+        header.addWidget(self.deck_value_label)
+        header.addWidget(self.count_label)
+        header.addWidget(self.validity_label)
+
+        # ---------- Add a card ----------
+
+        self.add_input = QLineEdit()
+        self.add_input.setPlaceholderText("Add a card by name…")
+        self.add_input.returnPressed.connect(self.search_card_to_add)
+
+        find_button = QPushButton("Find")
+        find_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        find_button.clicked.connect(self.search_card_to_add)
+
+        search_row = QHBoxLayout()
+        search_row.setSpacing(10)
+        search_row.addWidget(self.add_input, 1)
+        search_row.addWidget(find_button)
+
+        # Shown once a card is found
+        self.found_name = QLabel()
+        self.found_name.setObjectName("foundName")
+
+        self.found_edition = QComboBox()
+        self.found_edition.setMaxVisibleItems(15)
+        self.found_edition.setMinimumWidth(320)
+
+        self.found_quantity = QSpinBox()
+        self.found_quantity.setRange(1, 99)
+        self.found_quantity.setFixedWidth(80)
+
+        self.found_section = QComboBox()
+        for section in decks.SECTIONS:
+            self.found_section.addItem(decks.SECTION_LABELS[section], section)
+
+        add_button = QPushButton("Add to deck")
+        add_button.setObjectName("primaryButton")
+        add_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_button.clicked.connect(self.add_found_card)
+
+        found_row = QHBoxLayout()
+        found_row.setSpacing(10)
+        found_row.addWidget(self.found_name)
+        found_row.addWidget(self.found_edition, 1)
+        found_row.addWidget(self.found_quantity)
+        found_row.addWidget(self.found_section)
+        found_row.addWidget(add_button)
+
+        self.found_box = QWidget()
+        self.found_box.setLayout(found_row)
+        self.found_box.hide()
+
+        self.status_label = QLabel()
+        self.status_label.setObjectName("statusLabel")
+
+        add_layout = QVBoxLayout()
+        add_layout.setContentsMargins(16, 14, 16, 14)
+        add_layout.setSpacing(8)
+        add_layout.addLayout(search_row)
+        add_layout.addWidget(self.found_box)
+        add_layout.addWidget(self.status_label)
+
+        add_panel = styled_panel("cardPanel", add_layout)
+
+        # ---------- Cards grouped by type ----------
+
+        tree = QTreeWidget()
+        self.tree = tree
+        tree.setObjectName("deckTree")
+        tree.setColumnCount(5)
+        tree.setHeaderLabels(["Qty", "Name", "Mana", "Edition", "Price"])
+        tree.setRootIsDecorated(False)
+        tree.setIndentation(0)
+        tree.setUniformRowHeights(True)
+        tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tree.customContextMenuRequested.connect(self._show_card_menu)
+        tree.currentItemChanged.connect(self._on_card_selected)
+        tree.itemDoubleClicked.connect(lambda item, column: self.change_edition())
+
+        tree_header = tree.header()
+        tree_header.setStretchLastSection(False)
+        tree_header.setSectionResizeMode(COL_QTY, QHeaderView.ResizeMode.Fixed)
+        tree_header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
+        tree_header.setSectionResizeMode(COL_MANA, QHeaderView.ResizeMode.Fixed)
+        # The name gets all the free space; full type/edition are in the tooltip
+        tree_header.setSectionResizeMode(COL_EDITION, QHeaderView.ResizeMode.Interactive)
+        tree_header.setSectionResizeMode(COL_PRICE, QHeaderView.ResizeMode.Fixed)
+        tree.setColumnWidth(COL_QTY, 90)
+        tree.setColumnWidth(COL_MANA, 90)
+        tree.setColumnWidth(COL_EDITION, 150)
+        tree.setColumnWidth(COL_PRICE, 75)
+
+        delete_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), tree)
+        delete_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        delete_shortcut.activated.connect(self.remove_selected_cards)
+
+        # ---------- Side panel: preview + checks ----------
+
+        self.preview = QLabel("Select a card")
+        self.preview.setObjectName("cardImage")
+        self.preview.setFixedSize(PREVIEW_WIDTH, PREVIEW_HEIGHT)
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        checks_caption = QLabel("FORMAT CHECKS")
+        checks_caption.setObjectName("fieldLabel")
+
+        self.issue_list = QListWidget()
+        self.issue_list.setObjectName("issueList")
+        self.issue_list.setWordWrap(True)
+        self.issue_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.issue_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        side = QVBoxLayout()
+        side.setContentsMargins(16, 16, 16, 16)
+        side.setSpacing(10)
+        side.addWidget(self.preview, 0, Qt.AlignmentFlag.AlignHCenter)
+        side.addWidget(checks_caption)
+        side.addWidget(self.issue_list, 1)
+
+        side_panel = styled_panel("cardPanel", side)
+        side_panel.setFixedWidth(PREVIEW_WIDTH + 32)
+
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        body.addWidget(tree, 1)
+        body.addWidget(side_panel)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        layout.addLayout(header)
+        layout.addWidget(add_panel)
+        layout.addLayout(body, 1)
+
+        view = QWidget()
+        view.setLayout(layout)
+        return view
+
+    # ==================================
+    # DECK LIST
+    # ==================================
+
+    def load_decks(self, select_id=None):
+        """
+        Reload the deck list and open select_id (or keep the open deck).
+        """
+
+        if select_id is None and self.deck is not None:
+            select_id = self.deck.id
+
+        self.deck_list.blockSignals(True)
+        self.deck_list.clear()
+
+        selected_row = 0
+
+        for row, deck in enumerate(decks.get_decks()):
+
+            issues = decks.validate_deck(deck.format, decks.get_deck_cards(deck.id))
+            errors = sum(issue.level == "error" for issue in issues)
+            mark = "✓" if not errors else "⚠"
+
+            item = QListWidgetItem(
+                f"{deck.name}\n{decks.format_label(deck.format)} · "
+                f"{deck.card_count}/{decks.deck_size(deck.format)}  {mark}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, deck.id)
+            item.setToolTip("Legal" if not errors else plural(errors, "problem"))
+            self.deck_list.addItem(item)
+
+            if deck.id == select_id:
+                selected_row = row
+
+        self.deck_list.blockSignals(False)
+
+        has_decks = self.deck_list.count() > 0
+        self.rename_button.setEnabled(has_decks)
+        self.delete_deck_button.setEnabled(has_decks)
+
+        if has_decks:
+            # The list was cleared, so this always emits currentItemChanged,
+            # which opens the deck (_on_deck_selected)
+            self.deck_list.setCurrentRow(selected_row)
+        else:
+            self.deck = None
+            self.right_stack.setCurrentIndex(0)
+
+    def _on_deck_selected(self, current, previous):
+
+        if current is not None:
+            self._open_deck(current.data(Qt.ItemDataRole.UserRole))
+
+    def _update_deck_list_item(self):
+        """Refresh the text of the open deck in the list (count and ✓/⚠)."""
+
+        item = self.deck_list.currentItem()
+        if item is None or self.deck is None:
+            return
+
+        count = self._main_count()
+        errors = sum(issue.level == "error" for issue in self.issues)
+        mark = "✓" if not errors else "⚠"
+
+        item.setText(
+            f"{self.deck.name}\n{decks.format_label(self.deck.format)} · "
+            f"{count}/{decks.deck_size(self.deck.format)}  {mark}"
+        )
+        item.setToolTip("Legal" if not errors else plural(errors, "problem"))
+
+    def new_deck(self):
+
+        dialog = NewDeckDialog(self)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        deck_id = decks.create_deck(dialog.deck_name, dialog.deck_format)
+        self.load_decks(select_id=deck_id)
+        set_status(self.status_label, f"Deck “{dialog.deck_name}” created. Add cards with the search bar.")
+        self.add_input.setFocus()
+
+    def rename_deck(self):
+
+        if self.deck is None:
+            return
+
+        name, ok = QInputDialog.getText(self, "Rename deck", "New name:", text=self.deck.name)
+
+        if ok and name.strip():
+            decks.rename_deck(self.deck.id, name)
+            self.load_decks()
+
+    def delete_deck(self):
+
+        if self.deck is None:
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Delete deck",
+            f"Delete the deck “{self.deck.name}”?\n\n"
+            "Its card list will be lost. Your collection doesn't change.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+
+        if answer == QMessageBox.StandardButton.Yes:
+            decks.delete_deck(self.deck.id)
+            self.deck = None
+            self.load_decks()
+
+    # ==================================
+    # OPEN DECK
+    # ==================================
+
+    def _open_deck(self, deck_id):
+
+        changed_deck = self.deck is None or self.deck.id != deck_id
+        self.deck = decks.get_deck(deck_id)
+
+        if self.deck is None:
+            return
+
+        self.right_stack.setCurrentIndex(1)
+        self.deck_title.setText(self.deck.name)
+
+        self.format_input.blockSignals(True)
+        self.format_input.setCurrentIndex(self.format_input.findData(self.deck.format))
+        self.format_input.blockSignals(False)
+
+        if changed_deck:
+            self._clear_found()
+            set_status(self.status_label, "")
+            self.preview.clear()
+            self.preview.setText("Select a card")
+
+        self.refresh_deck()
+
+    def refresh_deck(self):
+        """
+        Reload the open deck's cards and redraw everything (tree, header, checks).
+        """
+
+        if self.deck is None:
+            return
+
+        self.entries = decks.get_deck_cards(self.deck.id)
+        self.issues = decks.validate_deck(self.deck.format, self.entries)
+
+        self._fill_tree()
+        self._update_header()
+        self._fill_issues()
+        self._update_deck_list_item()
+
+    def _main_count(self):
+        return sum(entry.quantity for entry in self.entries if entry.section in ("commander", "main"))
+
+    def _update_header(self):
+
+        currency = self.get_currency()
+        count = self._main_count()
+        size = decks.deck_size(self.deck.format)
+
+        self.count_label.setText(f"{count} / {size} cards")
+
+        errors = [issue for issue in self.issues if issue.level == "error"]
+
+        if errors:
+            set_status(self.validity_label, f"⚠ {plural(len(errors), 'problem')}", "error")
+        else:
+            set_status(self.validity_label, "✓ Legal", "success")
+
+        playing = [e for e in self.entries if e.section in ("commander", "main")]
+        value = sum(e.card.value(currency) or 0 for e in playing)
+        self.deck_value_label.setText(f"Value {format_money(value, currency)}")
+
+    def _fill_issues(self):
+
+        self.issue_list.clear()
+
+        if not self.issues:
+            item = QListWidgetItem(f"✓ The deck is legal in {decks.format_label(self.deck.format)}.")
+            item.setForeground(QColor(OK_COLOR))
+            self.issue_list.addItem(item)
+            return
+
+        for issue in self.issues:
+            symbol = "✗" if issue.level == "error" else "⚠"
+            item = QListWidgetItem(f"{symbol} {issue.message}")
+            item.setForeground(QColor(ERROR_COLOR if issue.level == "error" else WARNING_COLOR))
+            self.issue_list.addItem(item)
+
+    def _fill_tree(self):
+
+        currency = self.get_currency()
+        tree = self.tree
+
+        # Remember the current and selected lines to restore them after
+        # redrawing (the current one must not replace the selection)
+        current = tree.currentItem()
+        current_id = current.data(COL_NAME, Qt.ItemDataRole.UserRole) if current else None
+        selected_ids = {
+            item.data(COL_NAME, Qt.ItemDataRole.UserRole) for item in tree.selectedItems()
+        }
+
+        tree.clear()
+
+        if not self.entries:
+            placeholder = QTreeWidgetItem(["This deck is empty: add cards with the search bar above."])
+            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+            tree.addTopLevelItem(placeholder)
+            placeholder.setFirstColumnSpanned(True)
+            return
+
+        group_font = QFont()
+        group_font.setBold(True)
+
+        for title, entries in decks.group_deck_cards(self.entries):
+
+            copies = sum(entry.quantity for entry in entries)
+            # The group title uses the whole row (first column spanned)
+            group = QTreeWidgetItem([f"{title}  ({copies})"])
+            group.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            group.setFont(0, group_font)
+            tree.addTopLevelItem(group)
+            group.setFirstColumnSpanned(True)
+
+            for entry in sorted(entries, key=lambda e: ((e.card.cmc or 0), e.name)):
+                card = entry.card
+
+                item = QTreeWidgetItem([
+                    "",
+                    card.name,
+                    format_mana_cost(card.mana_cost, empty=""),
+                    card.printing_label,
+                    format_money(card.price(currency), currency),
+                ])
+                item.setData(COL_NAME, Qt.ItemDataRole.UserRole, entry.id)
+                item.setToolTip(COL_NAME, f"{card.name}\n{card.type_line or ''}")
+                item.setToolTip(COL_EDITION, card.printing_label)
+                item.setTextAlignment(COL_PRICE, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                group.addChild(item)
+
+                tree.setItemWidget(item, COL_QTY, self._quantity_cell(entry))
+
+                if entry.id == current_id:
+                    tree.setCurrentItem(item, COL_NAME, QItemSelectionModel.SelectionFlag.NoUpdate)
+
+                if entry.id in selected_ids:
+                    item.setSelected(True)
+
+            group.setExpanded(True)
+
+    def _quantity_cell(self, entry):
+
+        spin = QuantitySpinBox(entry.quantity)
+        spin.setRange(1, 999)
+        spin.setFixedWidth(70)
+        spin.valueChanged.connect(
+            lambda value, line_id=entry.id: self._on_quantity_changed(line_id, value)
+        )
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.addWidget(spin)
+
+        cell = QWidget()
+        cell.setLayout(layout)
+        return cell
+
+    def _on_quantity_changed(self, line_id, quantity):
+
+        decks.set_deck_card_quantity(line_id, quantity)
+
+        # Update counts and checks without rebuilding the tree (keeps focus)
+        for entry in self.entries:
+            if entry.id == line_id:
+                entry.card.quantity = quantity
+
+        self.issues = decks.validate_deck(self.deck.format, self.entries)
+        self._update_header()
+        self._fill_issues()
+        self._update_group_titles()
+        self._update_deck_list_item()
+
+    def _update_group_titles(self):
+
+        entries_by_id = {entry.id: entry for entry in self.entries}
+
+        for index in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(index)
+            copies = 0
+            for child_index in range(group.childCount()):
+                line_id = group.child(child_index).data(COL_NAME, Qt.ItemDataRole.UserRole)
+                if line_id in entries_by_id:
+                    copies += entries_by_id[line_id].quantity
+
+            title = group.text(0).rsplit("  (", 1)[0]
+            if group.childCount():
+                group.setText(0, f"{title}  ({copies})")
+
+    def _on_format_changed(self):
+
+        if self.deck is None:
+            return
+
+        deck_format = self.format_input.currentData()
+        decks.set_deck_format(self.deck.id, deck_format)
+        self.deck.format = deck_format
+        self.refresh_deck()
+
+    # ==================================
+    # SELECTED CARDS
+    # ==================================
+
+    def selected_entries(self):
+
+        entries_by_id = {entry.id: entry for entry in self.entries}
+        selected = []
+
+        for item in self.tree.selectedItems():
+            line_id = item.data(COL_NAME, Qt.ItemDataRole.UserRole)
+            if line_id in entries_by_id:
+                selected.append(entries_by_id[line_id])
+
+        return selected
+
+    def _on_card_selected(self, current, previous):
+
+        if current is None:
+            return
+
+        line_id = current.data(COL_NAME, Qt.ItemDataRole.UserRole)
+        entry = next((e for e in self.entries if e.id == line_id), None)
+
+        if entry is None:
+            return
+
+        self._preview_id += 1
+        preview_id = self._preview_id
+        url = entry.card.image_url
+
+        self.background.run(
+            lambda: load_card_image(url, width=PREVIEW_WIDTH, height=PREVIEW_HEIGHT),
+            on_success=lambda image: self._on_preview_loaded(preview_id, image),
+        )
+
+    def _on_preview_loaded(self, preview_id, image):
+
+        if preview_id != self._preview_id:
+            return
+
+        if image is None:
+            self.preview.setText("Image not available")
+        else:
+            self.preview.setPixmap(to_pixmap(image))
+
+    def _show_card_menu(self, position):
+
+        item = self.tree.itemAt(position)
+        if item is None or item.data(COL_NAME, Qt.ItemDataRole.UserRole) is None:
+            return
+
+        if not item.isSelected():
+            self.tree.clearSelection()
+            item.setSelected(True)
+            self.tree.setCurrentItem(item)
+
+        selected = self.selected_entries()
+        menu = QMenu(self)
+
+        move_menu = menu.addMenu("Move to")
+        for section in decks.SECTIONS:
+            action = move_menu.addAction(decks.SECTION_LABELS[section])
+            action.setEnabled(any(entry.section != section for entry in selected))
+            action.triggered.connect(lambda checked=False, s=section: self.move_selected(s))
+
+        change_action = menu.addAction("Change edition…")
+        change_action.setEnabled(len(selected) == 1)
+        change_action.triggered.connect(self.change_edition)
+
+        menu.addSeparator()
+
+        remove_text = "Remove from deck" if len(selected) == 1 else f"Remove {len(selected)} cards from deck"
+        remove_action = menu.addAction(remove_text)
+        remove_action.triggered.connect(self.remove_selected_cards)
+
+        menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def move_selected(self, section):
+
+        selected = self.selected_entries()
+
+        for entry in selected:
+            if entry.section != section:
+                decks.move_deck_card(entry.id, section)
+
+        self.refresh_deck()
+        set_status(
+            self.status_label,
+            f"Moved {plural(len(selected), 'card')} to {decks.SECTION_LABELS[section]}.",
+            "success",
+        )
+
+    def remove_selected_cards(self):
+
+        selected = self.selected_entries()
+        if not selected:
+            return
+
+        decks.remove_deck_cards([entry.id for entry in selected])
+        self.refresh_deck()
+
+        names = selected[0].name if len(selected) == 1 else plural(len(selected), "card")
+        set_status(self.status_label, f"Removed {names} from the deck.", "success")
+
+    def change_edition(self):
+
+        selected = self.selected_entries()
+        if len(selected) != 1:
+            return
+
+        entry = selected[0]
+        dialog = EditionDialog(entry.card, self.background, self, currency=self.get_currency())
+
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.selected_card is None:
+            return
+
+        decks.change_deck_card_printing(entry.id, dialog.selected_card)
+        self.refresh_deck()
+        set_status(
+            self.status_label,
+            f"{entry.name} changed to {dialog.selected_card.printing_label}.",
+            "success",
+        )
+
+    # ==================================
+    # ADD CARDS
+    # ==================================
+
+    def search_card_to_add(self):
+
+        name = self.add_input.text().strip()
+
+        if not name or self.deck is None:
+            return
+
+        self._search_id += 1
+        search_id = self._search_id
+
+        self._clear_found()
+        set_status(self.status_label, f"Searching “{name}”…")
+
+        self.background.run(
+            lambda: search_card(name),
+            on_success=lambda card: self._on_card_found(search_id, card),
+            on_error=lambda error: self._on_search_error(search_id, error),
+        )
+
+    def _on_card_found(self, search_id, card):
+
+        if search_id != self._search_id:
+            return
+
+        if card is None:
+            set_status(self.status_label, "Card not found. Check the spelling and try again.", "error")
+            return
+
+        set_status(self.status_label, "Loading editions…")
+
+        self.found_printings = [card]
+        self._fill_found(card)
+
+        self.background.run(
+            lambda: get_printings(card),
+            on_success=lambda printings: self._on_printings_loaded(search_id, card, printings),
+            on_error=lambda error: set_status(self.status_label, ""),
+        )
+
+    def _on_search_error(self, search_id, error):
+
+        if search_id != self._search_id:
+            return
+
+        if isinstance(error, ScryfallError):
+            set_status(self.status_label, "Could not connect to Scryfall.", "error")
+        else:
+            set_status(self.status_label, f"Unexpected error: {error}", "error")
+
+    def _on_printings_loaded(self, search_id, card, printings):
+
+        if search_id != self._search_id:
+            return
+
+        self.found_printings = printings
+
+        if is_basic_land(card) and printings:
+            # Basic lands: use the newest printing (only the newest page was loaded)
+            self._fill_found(printings[0], reset=False)
+            set_status(
+                self.status_label,
+                f"Basic land: newest edition selected ({plural(len(printings), 'recent edition')} available).",
+            )
+        else:
+            self._fill_found(card, reset=False)
+            set_status(self.status_label, f"{plural(len(printings), 'edition')} available.")
+
+    def _fill_found(self, card, reset=True):
+        """
+        Show the found card with its editions. reset=False keeps the quantity
+        and section the user may have chosen while the editions were loading.
+        """
+
+        currency = self.get_currency()
+
+        self.found_name.setText(card.name)
+
+        self.found_edition.clear()
+        selected = 0
+        for index, printing in enumerate(self.found_printings):
+            self.found_edition.addItem(printing_text(printing, currency))
+            if printing.scryfall_id == card.scryfall_id:
+                selected = index
+        self.found_edition.setCurrentIndex(selected)
+
+        if not reset:
+            return
+
+        # A commander deck without a commander: suggest the Commander section
+        has_commander = any(entry.section == "commander" for entry in self.entries)
+        if decks.is_commander_format(self.deck.format) and not has_commander and decks.can_be_commander(card):
+            section = "commander"
+        else:
+            section = "main"
+        self.found_section.setCurrentIndex(self.found_section.findData(section))
+
+        self.found_quantity.setValue(1)
+        self.found_box.show()
+
+    def _clear_found(self):
+
+        self.found_printings = []
+        self.found_box.hide()
+
+    def add_found_card(self):
+
+        index = self.found_edition.currentIndex()
+        if self.deck is None or not 0 <= index < len(self.found_printings):
+            return
+
+        card = self.found_printings[index]
+        quantity = self.found_quantity.value()
+        section = self.found_section.currentData()
+
+        decks.add_card_to_deck(self.deck.id, card, quantity, section)
+
+        self._clear_found()
+        self.add_input.clear()
+        self.add_input.setFocus()
+        self.refresh_deck()
+
+        set_status(
+            self.status_label,
+            f"Added {quantity} × {card.name} to {decks.SECTION_LABELS[section]}.",
+            "success",
+        )

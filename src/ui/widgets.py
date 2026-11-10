@@ -2,10 +2,24 @@
 Small reusable widgets and helpers shared by the windows and dialogs.
 """
 
+import re
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QSpinBox, QWidget
 
 from services.price_service import format_money
+
+
+def format_mana_cost(mana_cost, empty="No mana cost"):
+    """
+    "{2}{U}{U}" -> "2 U U". Double-faced costs keep their " // " separator.
+    """
+
+    if not mana_cost:
+        return empty
+
+    faces = mana_cost.split(" // ")
+    return "  //  ".join(" ".join(re.findall(r"\{([^}]+)\}", face)) for face in faces)
 
 
 def printing_text(card, currency):

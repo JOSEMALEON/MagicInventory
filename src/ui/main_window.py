@@ -1,5 +1,3 @@
-import re
-
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -30,6 +28,7 @@ from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from services.card_service import (
     search_card,
     get_printings,
+    is_basic_land,
     save_card,
     get_collection,
     remove_cards,
@@ -51,7 +50,14 @@ from src.config import RARITY_COLORS
 from src.ui.background import BackgroundRunner
 from src.ui.edition_dialog import EditionDialog
 from src.ui.import_page import ImportPage
-from src.ui.widgets import QuantitySpinBox, printing_text, set_status, styled_panel
+from src.ui.decks_page import DecksPage
+from src.ui.widgets import (
+    QuantitySpinBox,
+    format_mana_cost,
+    printing_text,
+    set_status,
+    styled_panel,
+)
 
 
 # Size of the big card image on the search page (Scryfall "normal" ratio)
@@ -131,18 +137,6 @@ def describe_update_time(moment):
     return f"on {moment.day} {moment:%b}"
 
 
-def format_mana_cost(mana_cost):
-    """
-    "{2}{U}{U}" -> "2 U U". Double-faced costs keep their " // " separator.
-    """
-
-    if not mana_cost:
-        return "No mana cost"
-
-    faces = mana_cost.split(" // ")
-    return "  //  ".join(" ".join(re.findall(r"\{([^}]+)\}", face)) for face in faces)
-
-
 class MainWindow(QWidget):
 
     def __init__(self):
@@ -210,6 +204,9 @@ class MainWindow(QWidget):
         self.pages.addWidget(self.search_page)
         self.pages.addWidget(self.collection_page)
 
+        self.decks_page = DecksPage(self.background, get_currency=lambda: self.currency)
+        self.pages.addWidget(self.decks_page)
+
         body_layout.addWidget(self._build_sidebar())
         body_layout.addWidget(self.pages)
 
@@ -274,12 +271,13 @@ class MainWindow(QWidget):
         self.search_nav = QPushButton("Search")
         self.import_nav = QPushButton("Import cards")
         self.collection_nav = QPushButton("Collection")
+        self.decks_nav = QPushButton("Decks")
 
         # Exclusive checkable buttons: the active page stays highlighted
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
 
-        for button in (self.search_nav, self.import_nav, self.collection_nav):
+        for button in (self.search_nav, self.import_nav, self.collection_nav, self.decks_nav):
             button.setObjectName("navButton")
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -289,6 +287,7 @@ class MainWindow(QWidget):
         self.search_nav.clicked.connect(lambda: self.show_page(self.search_page))
         self.import_nav.clicked.connect(lambda: self.show_page(self.import_page))
         self.collection_nav.clicked.connect(lambda: self.show_page(self.collection_page))
+        self.decks_nav.clicked.connect(lambda: self.show_page(self.decks_page))
 
         sidebar_layout.addStretch()
 
@@ -613,11 +612,16 @@ class MainWindow(QWidget):
 
         self.pages.setCurrentWidget(page)
 
+        # Prices and currency may have changed since the deck was drawn
+        if page is self.decks_page:
+            self.decks_page.refresh_deck()
+
         # Keep the sidebar in sync, also when the page changes from code
         nav_buttons = {
             self.search_page: self.search_nav,
             self.import_page: self.import_nav,
             self.collection_page: self.collection_nav,
+            self.decks_page: self.decks_nav,
         }
         nav_buttons[page].setChecked(True)
 
@@ -705,6 +709,14 @@ class MainWindow(QWidget):
 
         # Keep whatever edition the user may have picked meanwhile
         selected = self.current_card or card
+
+        # Basic lands: show the newest printing (only the newest page was loaded)
+        user_kept_default = self.current_card is None or self.current_card.scryfall_id == card.scryfall_id
+        if is_basic_land(card) and printings and user_kept_default:
+            selected = printings[0]
+            if selected.scryfall_id != card.scryfall_id:
+                self._show_card(selected)
+
         self._set_printings(printings, selected=selected)
 
         # The list sometimes has more complete data (e.g. prices) than the

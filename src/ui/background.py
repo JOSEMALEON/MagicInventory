@@ -23,9 +23,18 @@ class _Task(QRunnable):
         try:
             result = self.function()
         except Exception as error:
-            self.signals.failed.emit(error)
+            self._emit(self.signals.failed, error)
         else:
-            self.signals.succeeded.emit(result)
+            self._emit(self.signals.succeeded, result)
+
+    @staticmethod
+    def _emit(signal, value):
+        try:
+            signal.emit(value)
+        except RuntimeError:
+            # The app was closed while this task was running: nobody is
+            # waiting for the result anymore
+            pass
 
 
 class BackgroundRunner:

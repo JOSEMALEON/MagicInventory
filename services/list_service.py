@@ -15,7 +15,6 @@ Empty lines, comments (# or //) and section headers ("Deck", "Sideboard:",
 import csv
 import io
 import re
-import time
 from dataclasses import dataclass
 
 from api.scryfall_api import ScryfallError, get_cards_by_identifiers, search_card_by_name
@@ -261,7 +260,6 @@ def resolve_entries(entries):
 
         if suggestions_left > 0:
             suggestions_left -= 1
-            time.sleep(0.1)
 
             try:
                 suggestion = search_card_by_name(entry.name)

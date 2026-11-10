@@ -421,6 +421,102 @@ QTableCornerButton::section {
 }
 
 
+/* ---------- Decks page ---------- */
+
+QListWidget#deckList {
+    background-color: transparent;
+    border: none;
+    outline: 0;
+}
+
+QListWidget#deckList::item {
+    padding: 10px 12px;
+    margin-bottom: 4px;
+    border-radius: 8px;
+    color: #C9CED8;
+}
+
+QListWidget#deckList::item:hover {
+    background-color: #242833;
+}
+
+/* Same blue glow as the active sidebar button */
+QListWidget#deckList::item:selected {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(59, 130, 246, 0.30), stop:1 rgba(56, 189, 248, 0.03));
+    color: #E8EAF0;
+}
+
+QLabel#deckTitle {
+    font-size: 22px;
+    font-weight: 700;
+}
+
+QLabel#deckCount {
+    font-size: 15px;
+    font-weight: 600;
+}
+
+QLabel#validityBadge {
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QLabel#validityBadge[state="success"] {
+    background-color: rgba(74, 222, 128, 0.14);
+    color: #4ADE80;
+}
+
+QLabel#validityBadge[state="error"] {
+    background-color: rgba(248, 113, 113, 0.14);
+    color: #F87171;
+}
+
+QLabel#foundName {
+    font-weight: 600;
+}
+
+QTreeWidget#deckTree {
+    background-color: #1B1E26;
+    border: 1px solid #2C313D;
+    border-radius: 12px;
+    padding: 4px;
+    outline: 0;
+    selection-background-color: #1F2B44;
+    selection-color: #E8EAF0;
+}
+
+QTreeWidget#deckTree::item {
+    height: 34px;
+    border-bottom: 1px solid #20232C;
+}
+
+QTreeWidget#deckTree::item:hover {
+    background-color: #20232C;
+}
+
+QTreeWidget#deckTree::item:selected {
+    background-color: #1F2B44;
+    color: #E8EAF0;
+}
+
+QTreeWidget#deckTree QSpinBox {
+    padding: 3px 4px;
+}
+
+QListWidget#issueList {
+    background-color: transparent;
+    border: none;
+    outline: 0;
+}
+
+QListWidget#issueList::item {
+    padding: 4px 0;
+}
+
+
 /* ---------- Import page ---------- */
 
 QPlainTextEdit#listInput {

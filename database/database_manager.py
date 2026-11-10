@@ -60,7 +60,13 @@ def _connect():
     commits (or rolls back on error) the transaction.
     """
 
-    return closing(sqlite3.connect(DB_PATH))
+    conn = sqlite3.connect(DB_PATH)
+
+    # SQLite ignores FOREIGN KEY rules unless they are enabled per connection
+    # (needed so deleting a deck also deletes its cards)
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    return closing(conn)
 
 
 def create_database():
@@ -112,6 +118,10 @@ def create_database():
             PRIMARY KEY (scryfall_id, date)
         )
         """)
+
+        # Deck builder tables (imported here to avoid a circular import)
+        from database.deck_manager import create_deck_tables
+        create_deck_tables(conn)
 
 
 def _find_existing_card(conn, card):

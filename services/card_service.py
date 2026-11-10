@@ -15,10 +15,27 @@ def search_card(name):
     return search_card_by_name(name)
 
 
+def is_basic_land(card):
+    """
+    Plains, Island, Swamp, Mountain, Forest, Wastes and their Snow-Covered versions.
+    """
+    type_line = (card.type_line or "").split(" // ")[0]
+    return "Basic" in type_line and "Land" in type_line
+
+
 def get_printings(card):
     """
-    Return every printing (edition) of the card as a list of Cards.
+    Return the printings (editions) of the card as a list of Cards, newest
+    first. Basic lands have ~1000 printings: only the newest page (up to
+    175, a single request) is loaded for them.
     Raise ScryfallError on connection problems.
+    """
+    return get_card_printings(card, max_pages=1 if is_basic_land(card) else None)
+
+
+def get_all_printings(card):
+    """
+    Every printing of the card, also for basic lands (several requests).
     """
     return get_card_printings(card)
 
