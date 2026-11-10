@@ -275,7 +275,7 @@ Decisiones del autor:
 3. **Integración:** "Add to deck…" desde la colección, importar/exportar listas del mazo,
    vista visual con miniaturas.
 
-### Fase 1 hecha (10 nov 2026 — pendiente de commit)
+### Fase 1 hecha (10 nov 2026 — commit b3c2103)
 - Tablas `decks` y `deck_cards` (con `ON DELETE CASCADE` e índice único deck+printing+sección).
   `Card` y `_card_from_json` ganan `cmc`, `colors`, `color_identity`, `legalities`, `oracle_text`.
 - Página **Decks** (sidebar, debajo de Collection): lista de mazos con "Formato · 53/100 ✓/⚠",
