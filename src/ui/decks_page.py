@@ -45,6 +45,7 @@ from services.bracket_service import estimate_bracket
 from services.list_service import export_deck
 from services.list_service import export_shopping_list as save_shopping_list
 from src.ui.charts import BarChart, HorizontalBars
+from src.ui.deck_visual import DeckVisualView
 from src.ui.edition_dialog import EditionDialog
 from src.ui.got_it_dialog import GotItDialog
 from src.ui.import_deck_dialog import ImportDeckDialog
@@ -736,16 +737,18 @@ class DecksPage(QWidget):
 
         # List (cards grouped by type) or Stats (curve, colors, types)
         self.list_view_button = QPushButton("List")
+        self.visual_view_button = QPushButton("Visual")
         self.stats_view_button = QPushButton("Stats")
         self.view_group = QButtonGroup(self)
-        for button in (self.list_view_button, self.stats_view_button):
+        for button in (self.list_view_button, self.visual_view_button, self.stats_view_button):
             button.setObjectName("segmentButton")
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             self.view_group.addButton(button)
         self.list_view_button.setChecked(True)
         self.list_view_button.clicked.connect(lambda: self._show_view(0))
-        self.stats_view_button.clicked.connect(lambda: self._show_view(1))
+        self.visual_view_button.clicked.connect(lambda: self._show_view(1))
+        self.stats_view_button.clicked.connect(lambda: self._show_view(2))
 
         self.only_missing_input = QCheckBox("Show only cards I don't own")
         self.only_missing_input.toggled.connect(lambda checked: self._fill_tree())
@@ -753,6 +756,7 @@ class DecksPage(QWidget):
         sort_row = QHBoxLayout()
         sort_row.setSpacing(10)
         sort_row.addWidget(self.list_view_button)
+        sort_row.addWidget(self.visual_view_button)
         sort_row.addWidget(self.stats_view_button)
         sort_row.addSpacing(10)
         sort_row.addWidget(self.only_missing_input)
@@ -789,6 +793,12 @@ class DecksPage(QWidget):
 
         self.view_stack = QStackedWidget()
         self.view_stack.addWidget(tree)
+
+        self.visual_view = DeckVisualView(self.background)
+        self.visual_view.card_clicked.connect(self._show_preview)
+        self.visual_view.card_double_clicked.connect(lambda entry: self.change_edition([entry]))
+        self.visual_view.card_menu_requested.connect(lambda entry, pos: self._open_card_menu([entry], pos))
+        self.view_stack.addWidget(self.visual_view)
         self.view_stack.addWidget(self._build_stats_view())
 
         tree_column = QVBoxLayout()
@@ -1164,6 +1174,16 @@ class DecksPage(QWidget):
             self.issue_list.addItem(item)
 
     def _fill_tree(self):
+        """
+        Redraw the cards: the list, and the visual view when it is shown.
+        """
+
+        self._fill_list()
+
+        if self.view_stack.currentIndex() == 1:
+            self._fill_visual()
+
+    def _fill_list(self):
 
         currency = self.get_currency()
         tree = self.tree
@@ -1629,11 +1649,56 @@ class DecksPage(QWidget):
         self.stats_summary.setText("  ·  ".join(parts))
 
     def _show_view(self, index):
-        """0 = list of cards, 1 = stats."""
+        """0 = list of cards, 1 = visual (thumbnails), 2 = stats."""
 
         self.view_stack.setCurrentIndex(index)
-        self.sort_input.setEnabled(index == 0)
-        self.only_missing_input.setEnabled(index == 0)
+
+        # Order and "only cards I don't own" apply to the list and the visual view
+        self.sort_input.setEnabled(index in (0, 1))
+        self.only_missing_input.setEnabled(index in (0, 1))
+
+        if index == 1:
+            self._fill_visual()
+
+    def _fill_visual(self):
+        """
+        Same groups, order and filter as the list, drawn as card thumbnails.
+        """
+
+        if self.deck is None:
+            return
+
+        currency = self.get_currency()
+        sort_key = DECK_SORTS.get(self.sort_input.currentText(), DECK_SORTS[DEFAULT_DECK_SORT])
+        missing_by_id = {item.entry.id: item.missing for item in self.missing}
+        missing_by_name = {item.name.lower(): item.missing for item in self.missing}
+
+        groups = []
+
+        if not self.only_missing_input.isChecked():
+            for title, entries in decks.group_deck_cards(self.entries):
+                copies = sum(entry.quantity for entry in entries)
+                cards = [
+                    # The "Missing" badge goes on every line of a card you lack
+                    (entry, missing_by_name.get(entry.name.lower(), 0) if entry.section != "maybeboard" else 0)
+                    for entry in sorted(entries, key=lambda e: sort_key(e, currency))
+                ]
+                groups.append((f"{title}  ({copies})", cards, False))
+
+        elif self.missing:
+            copies = sum(item.missing for item in self.missing)
+            cards = [
+                (item.entry, missing_by_id[item.entry.id])
+                for item in sorted(self.missing, key=lambda m: sort_key(m.entry, currency))
+            ]
+            groups.append((f"{MISSING_GROUP_TITLE}  ({copies})", cards, True))
+
+        if not self.entries:
+            empty = "This deck is empty: add cards with the search bar above."
+        else:
+            empty = "✓ You own every card of this deck."
+
+        self.visual_view.set_groups(groups, empty_text=empty)
 
     def _on_format_changed(self):
 
@@ -1741,7 +1806,16 @@ class DecksPage(QWidget):
             item.setSelected(True)
             self.tree.setCurrentItem(item)
 
-        selected = self.selected_entries()
+        self._open_card_menu(self.selected_entries(), self.tree.viewport().mapToGlobal(position))
+
+    def _open_card_menu(self, selected, global_position):
+        """
+        Context menu for these deck lines (from the list or the visual view).
+        """
+
+        if not selected:
+            return
+
         menu = QMenu(self)
 
         # Cards you don't own enough copies of: register the ones you got
@@ -1756,23 +1830,24 @@ class DecksPage(QWidget):
         for section in decks.SECTIONS:
             action = move_menu.addAction(decks.SECTION_LABELS[section])
             action.setEnabled(any(entry.section != section for entry in selected))
-            action.triggered.connect(lambda checked=False, s=section: self.move_selected(s))
+            action.triggered.connect(lambda checked=False, s=section: self.move_selected(s, selected))
 
         change_action = menu.addAction("Change edition…")
         change_action.setEnabled(len(selected) == 1)
-        change_action.triggered.connect(self.change_edition)
+        change_action.triggered.connect(lambda: self.change_edition(selected))
 
         menu.addSeparator()
 
         remove_text = "Remove from deck" if len(selected) == 1 else f"Remove {len(selected)} cards from deck"
         remove_action = menu.addAction(remove_text)
-        remove_action.triggered.connect(self.remove_selected_cards)
+        remove_action.triggered.connect(lambda: self.remove_selected_cards(selected))
 
-        menu.exec(self.tree.viewport().mapToGlobal(position))
+        menu.exec(global_position)
 
-    def move_selected(self, section):
+    def move_selected(self, section, entries=None):
+        """Move these lines (default: the ones selected in the list)."""
 
-        selected = self.selected_entries()
+        selected = entries if entries is not None else self.selected_entries()
 
         for entry in selected:
             if entry.section != section:
@@ -1785,9 +1860,10 @@ class DecksPage(QWidget):
             "success",
         )
 
-    def remove_selected_cards(self):
+    def remove_selected_cards(self, entries=None):
+        """Remove these lines (default: the ones selected in the list)."""
 
-        selected = self.selected_entries()
+        selected = entries if entries is not None else self.selected_entries()
         if not selected:
             return
 
@@ -1797,9 +1873,10 @@ class DecksPage(QWidget):
         names = selected[0].name if len(selected) == 1 else plural(len(selected), "card")
         set_status(self.status_label, f"Removed {names} from the deck.", "success")
 
-    def change_edition(self):
+    def change_edition(self, entries=None):
+        """Change the edition of one line (default: the one selected in the list)."""
 
-        selected = self.selected_entries()
+        selected = entries if entries is not None else self.selected_entries()
         if len(selected) != 1:
             return
 

@@ -599,6 +599,28 @@ QPushButton#gotItButton:hover {
     background-color: rgba(74, 222, 128, 0.24);
 }
 
+/* Visual view: card thumbnails grouped by type */
+QScrollArea#deckVisual {
+    background-color: #1B1E26;
+    border: 1px solid #2C313D;
+    border-radius: 12px;
+}
+
+QWidget#deckVisualContent {
+    background-color: #1B1E26;
+}
+
+QLabel#visualGroupTitle,
+QLabel#visualGroupTitleMissing {
+    font-weight: 700;
+    font-size: 14px;
+    padding-top: 4px;
+}
+
+QLabel#visualGroupTitleMissing {
+    color: #F87171;
+}
+
 QWidget#statsPanel {
     background-color: #1B1E26;
     border: 1px solid #2C313D;

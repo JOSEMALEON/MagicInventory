@@ -7,6 +7,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
+from api.scryfall_api import get_cards_by_identifiers
 from database import deck_manager
 from database.database_manager import add_card, get_all_cards
 from models.card import Card
@@ -514,6 +515,35 @@ def deck_stats(deck_cards):
     )
 
 
+def add_collection_cards_to_deck(deck_id, cards, quantity, section):
+    """
+    Add collection cards to a deck, keeping their edition. The collection
+    doesn't store mana value, colors, legalities... so the printings are
+    fetched from Scryfall in one batch (network: call it from a background
+    thread). Return (added card lines, names not found).
+    Raise ScryfallError on connection problems.
+    """
+
+    identifiers = [
+        {"id": card.scryfall_id} if card.scryfall_id else {"name": card.name}
+        for card in cards
+    ]
+
+    results = get_cards_by_identifiers(identifiers)
+
+    added = 0
+    not_found = []
+
+    for card, (_, fresh) in zip(cards, results):
+        if fresh is None:
+            not_found.append(card.name)
+            continue
+        deck_manager.add_card_to_deck(deck_id, fresh, quantity, section)
+        added += 1
+
+    return added, not_found
+
+
 def create_deck_from_list(name, deck_format, found):
     """
     Create a deck from an imported list. found is [(ListEntry, Card)] as
@@ -538,5 +568,5 @@ __all__ = [
     "delete_deck", "get_deck_cards", "add_card_to_deck", "set_deck_card_quantity",
     "remove_deck_cards", "move_deck_card", "change_deck_card_printing", "create_deck_from_list",
     "MissingCard", "collection_counts", "needed_counts", "missing_cards", "add_to_collection",
-    "DeckStats", "deck_stats", "CURVE_MAX",
+    "DeckStats", "deck_stats", "CURVE_MAX", "add_collection_cards_to_deck",
 ]

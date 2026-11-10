@@ -60,6 +60,13 @@ from src.ui.background import BackgroundRunner
 from src.ui.edition_dialog import EditionDialog
 from src.ui.import_page import ImportPage
 from src.ui.decks_page import DecksPage
+from src.ui.add_to_deck_dialog import AddToDeckDialog
+from services.deck_service import (
+    SECTION_LABELS,
+    add_collection_cards_to_deck,
+    create_deck,
+    get_deck,
+)
 from src.ui.widgets import (
     QuantitySpinBox,
     format_mana_cost,
@@ -567,6 +574,11 @@ class MainWindow(QWidget):
         self.change_edition_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.change_edition_button.clicked.connect(self.change_selected_edition)
 
+        self.add_to_deck_button = QPushButton("Add to deck…")
+        self.add_to_deck_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_to_deck_button.setToolTip("Add the selected cards to one of your decks")
+        self.add_to_deck_button.clicked.connect(self.add_selected_to_deck)
+
         self.delete_button = QPushButton("Delete")
         self.delete_button.setObjectName("dangerButton")
         self.delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -580,6 +592,7 @@ class MainWindow(QWidget):
         toolbar.addWidget(self.sort_input)
         toolbar.addStretch()
         toolbar.addWidget(self.selection_label)
+        toolbar.addWidget(self.add_to_deck_button)
         toolbar.addWidget(self.change_edition_button)
         toolbar.addWidget(self.delete_button)
 
@@ -1337,6 +1350,7 @@ class MainWindow(QWidget):
         self.delete_button.setEnabled(bool(selected))
         # Changing the edition only makes sense for one card at a time
         self.change_edition_button.setEnabled(len(selected) == 1)
+        self.add_to_deck_button.setEnabled(bool(selected))
 
     def _show_collection_menu(self, position):
 
@@ -1351,6 +1365,10 @@ class MainWindow(QWidget):
         selected = self.selected_cards()
 
         menu = QMenu(self)
+
+        deck_text = "Add to deck…" if len(selected) == 1 else f"Add {len(selected)} cards to deck…"
+        deck_action = menu.addAction(deck_text)
+        deck_action.triggered.connect(self.add_selected_to_deck)
 
         change_action = menu.addAction("Change edition…")
         change_action.setEnabled(len(selected) == 1)
@@ -1541,6 +1559,64 @@ class MainWindow(QWidget):
 
         deleted = cards[0].name if len(cards) == 1 else plural(len(cards), "printing")
         self._set_collection_status(f"Deleted {deleted} ({copies_text}).", "success")
+
+    def add_selected_to_deck(self):
+        """
+        Add the selected collection cards to a deck (existing or new), with
+        their collection edition. Scryfall data is fetched in the background.
+        """
+
+        cards = self.selected_cards()
+        if not cards:
+            return
+
+        last_deck = self.settings.value("last_deck_id", None)
+        try:
+            last_deck = int(last_deck) if last_deck is not None else None
+        except (TypeError, ValueError):
+            last_deck = None
+
+        dialog = AddToDeckDialog(cards, self, last_deck_id=last_deck)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        deck_id = dialog.deck_id
+        if deck_id is None:
+            deck_id = create_deck(dialog.new_deck_name, dialog.new_deck_format)
+
+        self.settings.setValue("last_deck_id", deck_id)
+
+        section, quantity = dialog.section, dialog.quantity
+        deck = get_deck(deck_id)
+
+        self._set_collection_status(f"Adding {plural(len(cards), 'card')} to “{deck.name}”…")
+
+        self.background.run(
+            lambda: add_collection_cards_to_deck(deck_id, cards, quantity, section),
+            on_success=lambda result: self._on_added_to_deck(deck, section, result),
+            on_error=lambda error: self._set_collection_status(
+                "Could not add the cards: no connection to Scryfall."
+                if isinstance(error, ScryfallError) else f"Could not add the cards: {error}",
+                "error",
+            ),
+        )
+
+    def _on_added_to_deck(self, deck, section, result):
+
+        added, not_found = result
+
+        message = (
+            f"Added {plural(added, 'card')} to “{deck.name}” "
+            f"({SECTION_LABELS[section]})."
+        )
+        if not_found:
+            message += " Not found on Scryfall: " + ", ".join(not_found) + "."
+
+        self._set_collection_status(message, "error" if not_found else "success")
+
+        # The deck list (and the open deck) show the new cards
+        self.decks_page.load_decks()
 
     def change_selected_edition(self):
 

@@ -27,6 +27,9 @@ src/ui/import_page.py        -> ImportPage: pegar/cargar una lista, comprobarla 
 src/ui/decks_page.py         -> DecksPage (lista de mazos + mazo abierto), DeckListCard y NewDeckDialog
 src/ui/import_deck_dialog.py -> ImportDeckDialog: crear un mazo desde una lista con secciones
 src/ui/got_it_dialog.py      -> GotItDialog: registrar copias compradas de una carta que falta
+src/ui/add_to_deck_dialog.py -> AddToDeckDialog: añadir cartas de la colección a un mazo (o a uno nuevo)
+src/ui/deck_visual.py        -> DeckVisualView / CardTile: vista visual del mazo con miniaturas
+src/ui/flow_layout.py        -> FlowLayout: coloca widgets en filas que se ajustan al ancho
 src/ui/charts.py             -> BarChart (curva de maná) y HorizontalBars (colores, tipos) con QPainter
 services/deck_service.py     -> FORMATS, agrupación por tipo, validate_deck() -> [DeckIssue], fachada de mazos
 database/deck_manager.py     -> tablas decks/deck_cards (create_deck_tables) y CRUD de mazos y cartas
@@ -399,9 +402,25 @@ Decisiones del autor:
   lo que falta), curva de maná 0..7+ (`BarChart`), colores y tipos (`HorizontalBars`) en
   src/ui/charts.py, dibujados con QPainter. `deck_service.deck_stats()` (commander + main).
 
+### Fase 3 hecha (10 nov 2026 — commit PENDING). Deck builder completo.
+- **"Add to deck…"** en la colección (botón + menú contextual, una o varias cartas):
+  `AddToDeckDialog` (src/ui/add_to_deck_dialog.py): mazo existente o "＋ New deck…" (nombre + formato;
+  con una sola carta se propone su nombre), sección (sugiere Commander si es una carta que puede serlo
+  y el mazo no tiene comandante) y copias de cada carta. Recuerda el último mazo (`last_deck_id` en
+  QSettings). `deck_service.add_collection_cards_to_deck()` pide los datos a Scryfall en un lote
+  (la colección no guarda cmc/colores/legalidades) y conserva la edición de la colección.
+- **Vista visual** (List | Visual | Stats): `DeckVisualView` (src/ui/deck_visual.py), mismos grupos,
+  orden e interruptor que la lista; `CardTile` con "×N", "Missing N" (atenuada) y borde de selección;
+  clic = vista previa, doble clic = cambiar edición, clic derecho = mismo menú (`_open_card_menu`).
+  `FlowLayout` (src/ui/flow_layout.py) reparte las miniaturas según el ancho.
+  `move_selected/remove_selected_cards/change_edition` aceptan `entries` (si no, la selección de la lista).
+- `_fill_tree()` redibuja la lista (`_fill_list`) y, si está visible, la vista visual.
+- Tests con menús: un `QMenu.exec` real bloquea en modo offscreen; sustituir `decks_page.QMenu` por
+  una subclase que registre las acciones.
+
 ## Pendiente
 
-- **Deck builder, fase 3:** "Add to deck…" desde la colección y vista visual con miniaturas.
+- Roadmap: filtros por campo en la colección, contador de vidas, asistente de IA, exportar a JSON.
 - Ideas de mejora: deshacer el último borrado; mostrar colores de rareza también en
   filas seleccionadas; guardar el filtro entre sesiones.
 
