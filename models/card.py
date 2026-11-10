@@ -13,6 +13,7 @@ class Card:
         set_code=None,
         collector_number=None,
         prints_search_uri=None,
+        id=None,
     ):
 
         self.name = name
@@ -30,6 +31,9 @@ class Card:
 
         # Scryfall URL that lists every printing of this card (not stored in the DB)
         self.prints_search_uri = prints_search_uri
+
+        # Row id in the database (None for cards that come from Scryfall)
+        self.id = id
 
 
     @property

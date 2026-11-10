@@ -20,16 +20,22 @@ python main.py
 
 ```
 main.py                      -> crea QApplication, carga estilos, abre MainWindow maximizada
-src/config.py                -> rutas absolutas (BASE_DIR, DB_PATH, STYLES_PATH, IMAGE_CACHE_DIR), red (REQUEST_TIMEOUT, HTTP_HEADERS), COLORS
-src/ui/main_window.py        -> toda la interfaz (QWidget): topbar con buscador, sidebar, panel de carta, tabla de colección
+src/config.py                -> rutas absolutas (BASE_DIR, DB_PATH, STYLES_PATH, ASSETS_DIR, IMAGE_CACHE_DIR), red, RARITY_COLORS
+src/ui/main_window.py        -> ventana: topbar, sidebar, páginas Search (panel de carta) y Collection (tabla + gestión)
+src/ui/edition_dialog.py     -> EditionDialog: elegir otra edición para una carta de la colección (con vista previa)
+src/ui/widgets.py            -> styled_panel(), set_status(label, text, state), QuantitySpinBox (ignora la rueda sin foco)
 src/ui/background.py         -> BackgroundRunner: run(fn, on_success, on_error) en un QThreadPool (4 hilos); callbacks en el hilo GUI
-src/ui/styles.qss            -> hoja de estilos Qt (tema azul oscuro)
-services/card_service.py     -> fachada entre la UI y api/database (search_card, get_printings, save_card, get_collection)
+src/ui/styles.qss            -> tema oscuro (paleta documentada en la cabecera); @ASSETS@ lo sustituye main.py por la ruta absoluta
+services/card_service.py     -> fachada UI <-> api/database: search_card, get_printings, save_card, get_collection,
+                                remove_cards, set_quantity, change_card_printing
 services/image_service.py    -> load_card_image(url, w, h) -> QImage (caché en cache/images/<sha1(url)>.jpg); to_pixmap()
-api/scryfall_api.py          -> búsqueda fuzzy en https://api.scryfall.com/cards/named -> Card
-database/database_manager.py -> SQLite: create_database (con migración), add_card, get_all_cards
-models/card.py               -> clase Card
-ai/recommender.py, assets/   -> vacíos (reservados para la parte de IA)
+api/scryfall_api.py          -> búsqueda fuzzy (/cards/named) y ediciones (prints_search_uri, o /cards/search
+                                q=!"nombre" para cartas de la BD, que no guardan esa URI)
+database/database_manager.py -> SQLite: create_database (con migración), add_card, get_all_cards,
+                                delete_cards, update_quantity, change_printing (fusiona si la edición ya existe)
+models/card.py               -> clase Card (card.id = id de fila en la BD, None si viene de Scryfall)
+assets/icons/                -> SVG de la interfaz (flechas de combo/spinbox)
+ai/recommender.py            -> vacío (reservado para la parte de IA)
 ```
 
 Flujo: buscar -> `search_card()` -> Scryfall -> `Card` -> imagen + datos en el panel ->
@@ -89,23 +95,51 @@ scryfall_id, set_code, collector_number`.
 - Búsqueda, lista de ediciones e imágenes (panel y tabla) en segundo plano con `BackgroundRunner`.
   Refrescar la tabla con la caché llena tarda ~0,05 s.
 
-### Hecho (navegación, 10 nov 2026 — pendiente de commit)
+### Hecho (navegación, 10 nov 2026 — commit e943db6)
 - `QStackedWidget` con dos páginas: `search_page` (panel de carta) y `collection_page` (tabla +
   resumen "N printings · M cards"). `show_page(page)` cambia de página y marca el botón de la
   sidebar (`QButtonGroup` exclusivo, estilo `#navButton:checked` en el .qss).
 - Buscar desde la barra superior lleva siempre a la página Search.
 - El `__init__` de MainWindow se dividió en `_build_top_bar/_sidebar/_search_page/_collection_page`.
 
+### Hecho (rediseño visual, 10 nov 2026 — pendiente de commit)
+- Tema oscuro moderno elegido por el autor: fondo `#111318`, paneles `#1B1E26`, acento en **degradados
+  de azul** (`#2563EB -> #38BDF8`). El autor pidió que el morado `#8B5CF6` se use solo en momentos
+  puntuales donde mejore el diseño (ahora: degradado del logo ◆ y rareza special/bonus).
+  Sin reglas globales de fondo: cada panel tiene `objectName` (`#topBar`, `#sidebar`,
+  `#cardPanel`...) y se crea con `styled_panel()` (activa `WA_StyledBackground`).
+- Panel de carta: imagen 320x446 con esquinas redondeadas (`_round_corners` en image_service),
+  nombre, tipo, coste (`format_mana_cost`: "{2}{U}" -> "2 U"), insignia de rareza coloreada
+  (`RARITY_COLORS`), edición, y `status_label` con estados info/success/error (propiedad `state`).
+  `_show_empty_card()` deja el panel vacío y desactiva "Add to Collection".
+- Eliminados `COLORS` y las reglas globales `QLabel`/`QFrame` del .qss.
+- Capturas sin ventana para revisar la UI: `QT_QPA_PLATFORM=offscreen` + `QT_QPA_FONTDIR=C:/Windows/Fonts`
+  (sin la segunda, el texto sale como cuadrados).
+
+### Hecho (gestión de la colección, 10 nov 2026 — pendiente de commit)
+- Tabla con selección múltiple (Ctrl/Mayús), contador "N selected", columnas
+  imagen/nombre/edición/rareza (coloreada)/cantidad. Cada fila guarda `card.id` en `Qt.UserRole`
+  (columna nombre); `selected_cards()` devuelve las Cards seleccionadas.
+- Cantidad: `QuantitySpinBox` en cada fila; guarda al cambiar sin redibujar la tabla.
+- Borrar: botón "Delete", tecla Supr (solo con la tabla enfocada) y menú contextual; siempre con
+  confirmación (`QMessageBox.question`).
+- Cambiar edición: botón, doble clic o menú contextual -> `EditionDialog`. Si la edición elegida ya
+  está en la colección, `change_printing()` suma las cantidades y borra la fila original.
+- Filtro instantáneo (oculta filas, no recarga) y orden: nombre, recientes (id), cantidad, edición, rareza.
+- Miniaturas en memoria (`self._thumbnails`, url -> QPixmap): ordenar/filtrar no vuelve a decodificar.
+- Página Search: `owned_label` -> "In your collection: X of this edition · Y in total".
+- Probar sin tocar la colección real: copiar `magic_inventory.db` a un temporal y asignar
+  `database.database_manager.DB_PATH` antes de crear la ventana.
+
 ## Pendiente (en este orden)
 
-1. **Gestión de la colección:** borrar cartas y editar cantidades desde la tabla.
-2. **Limpieza:**
-   - `requirements.txt` está en UTF-16 y es un `pip freeze` del entorno completo (PyAutoGUI,
-     pynput, keyboard... que no se usan). Dejar solo `PySide6` y `requests`, en UTF-8.
-   - `COLORS` de `config.py` no se usa (los colores están repetidos en `styles.qss`).
-   - La regla `QLabel` del `.qss` pone en negrita/16 px todas las etiquetas.
+1. **Limpieza:** `requirements.txt` está en UTF-16 y es un `pip freeze` del entorno completo
+   (PyAutoGUI, pynput, keyboard... que no se usan). Dejar solo `PySide6` y `requests`, en UTF-8.
+
+   Ideas de mejora detectadas: deshacer el último borrado; mostrar colores de rareza también en
+   filas seleccionadas; guardar orden/filtro elegidos entre sesiones.
 
 ## Roadmap del README (a largo plazo)
-Filtros avanzados de la colección (nombre, edición, cantidad, tipo, rareza), contador de vidas
+Filtros avanzados de la colección (ya hay filtro de texto; faltan filtros por campo), contador de vidas
 (multijugador, Commander), asistente de IA para interacciones entre cartas, deck builder,
 estadísticas, exportar a CSV/JSON, seguimiento de precios.

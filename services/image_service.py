@@ -2,8 +2,8 @@ import hashlib
 import os
 import tempfile
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QImage, QPainter, QPainterPath, QPixmap
 import requests
 
 from src.config import REQUEST_TIMEOUT, HTTP_HEADERS, IMAGE_CACHE_DIR
@@ -89,16 +89,38 @@ def load_card_image(url, width=None, height=None):
         return None
 
     if width and height:
-        return image.scaled(
+        image = image.scaled(
             width, height,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+    elif width:
+        image = image.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
 
-    if width:
-        return image.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+    return _round_corners(image)
 
-    return image
+
+def _round_corners(image):
+    """
+    Return a copy of the image with transparent rounded corners, like a
+    real card (the radius is about 4.5% of the card width).
+    """
+
+    radius = image.width() * 0.045
+
+    rounded = QImage(image.size(), QImage.Format.Format_ARGB32_Premultiplied)
+    rounded.fill(Qt.GlobalColor.transparent)
+
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(rounded.rect()), radius, radius)
+
+    painter = QPainter(rounded)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setClipPath(path)
+    painter.drawImage(0, 0, image)
+    painter.end()
+
+    return rounded
 
 
 def to_pixmap(image):

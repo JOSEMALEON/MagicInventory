@@ -6,6 +6,7 @@ from models.card import Card
 from src.config import REQUEST_TIMEOUT, HTTP_HEADERS
 
 SCRYFALL_NAMED_URL = "https://api.scryfall.com/cards/named"
+SCRYFALL_SEARCH_URL = "https://api.scryfall.com/cards/search"
 
 
 class ScryfallError(Exception):
@@ -111,14 +112,32 @@ def get_card_printings(card):
     newest first. Raise ScryfallError if a request fails.
     """
 
-    if not card.prints_search_uri:
+    if card.prints_search_uri:
+        url, params = card.prints_search_uri, None
+
+    elif card.name:
+        # Cards loaded from the database don't keep prints_search_uri:
+        # search every printing by exact name instead (same options Scryfall uses)
+        url = SCRYFALL_SEARCH_URL
+        params = {
+            "q": f'!"{card.name}"',
+            "unique": "prints",
+            "order": "released",
+            "include_extras": "true",
+            "include_variations": "true",
+        }
+
+    else:
         return [card]
 
     printings = []
-    url = card.prints_search_uri
 
     while url:
-        data = _get_json(url)
+        # 404 = the search found nothing
+        data = _get_json(url, params=params)
+
+        # "next_page" already contains every parameter
+        params = None
 
         if data is None:
             break

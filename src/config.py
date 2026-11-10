@@ -10,6 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 DB_PATH = BASE_DIR / "magic_inventory.db"
 STYLES_PATH = BASE_DIR / "src" / "ui" / "styles.qss"
+ASSETS_DIR = BASE_DIR / "assets"
 
 # Downloaded card images, so each one is only downloaded once
 IMAGE_CACHE_DIR = BASE_DIR / "cache" / "images"
@@ -31,11 +32,13 @@ HTTP_HEADERS = {
 # COLORS
 # =============================
 
-COLORS = {
-    "bg_deep": "#1E2A4A",
-    "bg_panel": "#3F5FA8",
-    "primary": "#7093EF",
-    "hover": "#9FB8F5",
-    "highlight": "#D6E1FF",
-    "text": "#FFFFFF"
+# The theme colors live in src/ui/styles.qss. These are only the ones the
+# code needs to choose at runtime: the rarity badge of each card.
+RARITY_COLORS = {
+    "common": "#C9CED8",
+    "uncommon": "#9FC3E0",
+    "rare": "#E6C068",
+    "mythic": "#F2753A",
+    "special": "#C38BEA",
+    "bonus": "#C38BEA",
 }

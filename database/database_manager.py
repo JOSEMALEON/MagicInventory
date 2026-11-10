@@ -149,14 +149,15 @@ def add_card(card):
 
 def get_all_cards():
     """
-    Return all cards from the database as Card objects, sorted by name
+    Return all cards from the database as Card objects, sorted by name.
+    Each Card has its row id in card.id (higher id = added more recently).
     """
 
     with _connect() as conn:
 
         rows = conn.execute("""
         SELECT name, set_name, type_line, mana_cost, rarity, image_url, quantity,
-               scryfall_id, set_code, collector_number
+               scryfall_id, set_code, collector_number, id
         FROM cards
         ORDER BY name COLLATE NOCASE, set_name
         """).fetchall()
@@ -173,6 +174,95 @@ def get_all_cards():
             scryfall_id=row[7],
             set_code=row[8],
             collector_number=row[9],
+            id=row[10],
         )
         for row in rows
     ]
+
+
+def delete_cards(card_ids):
+    """
+    Remove these rows (printings) from the collection.
+    """
+
+    with _connect() as conn, conn:
+
+        conn.executemany(
+            "DELETE FROM cards WHERE id = ?",
+            [(card_id,) for card_id in card_ids],
+        )
+
+
+def update_quantity(card_id, quantity):
+    """
+    Set how many copies of this printing the collection has.
+    """
+
+    if quantity < 1:
+        raise ValueError("Quantity must be at least 1 (delete the card instead)")
+
+    with _connect() as conn, conn:
+
+        conn.execute(
+            "UPDATE cards SET quantity = ? WHERE id = ?",
+            (quantity, card_id),
+        )
+
+
+def change_printing(card_id, new_card):
+    """
+    Move the row card_id to another printing (edition) of the same card.
+
+    If the collection already has a row for that printing, the quantities
+    are merged into it and card_id is deleted. Return the id of the row
+    that holds the cards afterwards.
+    """
+
+    with _connect() as conn, conn:
+
+        row = conn.execute(
+            "SELECT quantity FROM cards WHERE id = ?", (card_id,)
+        ).fetchone()
+
+        if row is None:
+            raise ValueError(f"Card {card_id} is not in the collection")
+
+        quantity = row[0] or 0
+
+        target = None
+        if new_card.scryfall_id:
+            target = conn.execute(
+                "SELECT id, quantity FROM cards WHERE scryfall_id = ? AND id != ?",
+                (new_card.scryfall_id, card_id),
+            ).fetchone()
+
+        if target:
+            target_id, target_quantity = target
+
+            conn.execute(
+                "UPDATE cards SET quantity = ? WHERE id = ?",
+                ((target_quantity or 0) + quantity, target_id),
+            )
+            conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+
+            return target_id
+
+        conn.execute("""
+        UPDATE cards
+        SET name = ?, set_name = ?, type_line = ?, mana_cost = ?, rarity = ?,
+            image_url = ?, scryfall_id = ?, set_code = ?, collector_number = ?
+        WHERE id = ?
+        """, (
+            new_card.name,
+            new_card.set_name,
+            new_card.type_line,
+            new_card.mana_cost,
+            new_card.rarity,
+            new_card.image_url,
+            new_card.scryfall_id,
+            new_card.set_code,
+            new_card.collector_number,
+            card_id,
+        ))
+
+        return card_id

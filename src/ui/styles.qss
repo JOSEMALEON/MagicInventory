@@ -1,229 +1,420 @@
-/* =========================
-   GLOBAL BACKGROUND
-========================= */
+/* =========================================================
+   MAGIC INVENTORY — DARK THEME
+
+   Palette
+     background   #111318    panels        #1B1E26
+     raised       #242833    borders       #2C313D
+     text         #E8EAF0    muted text    #8B92A5
+     accent       #3B82F6    gradient      #2563EB -> #38BDF8
+     brand violet #8B5CF6 (only in the logo gradient and the special rarity)
+     success      #4ADE80    error         #F87171
+
+   @ASSETS@ is replaced by the absolute path of the assets folder
+   when main.py loads this file.
+   ========================================================= */
+
+
+/* ---------- Base ---------- */
 
 QWidget {
-    background-color: #1E2A4A;
-    color: white;
-    font-family: Segoe UI;
+    color: #E8EAF0;
+    font-family: "Segoe UI";
+    font-size: 14px;
 }
 
-
-/* =========================
-   TITLES / HEADERS
-========================= */
+QWidget#mainWindow {
+    background-color: #111318;
+}
 
 QLabel {
-    background-color: #1E2A4A;
-    color: white;
-    font-size: 16px;
-    font-weight: bold;
+    background: transparent;
 }
 
 
-/* =========================
-   GROUP BOX (Card Information)
-========================= */
+/* ---------- Top bar ---------- */
 
-QGroupBox {
-    background-color: #3F5FA8;
-    border-radius: 10px;
-
-    border: 1px solid #1E2A4A;
-
-    margin-top: 12px;
-    padding-top: 12px;
+QWidget#topBar {
+    background-color: #1B1E26;
+    border-bottom: 1px solid #2C313D;
 }
 
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 6px 0 6px;
+/* Brand mark: the one place where blue turns into violet */
+QLabel#appLogo {
+    color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #38BDF8, stop:1 #8B5CF6);
+    font-size: 22px;
+}
 
-    background-color: #1E2A4A;
-    color: white;
-
-    font-size: 16px;
-    font-weight: bold;
+QLabel#appTitle {
+    font-size: 18px;
+    font-weight: 600;
 }
 
 
-/* =========================
-   PANELS
-========================= */
+/* ---------- Sidebar ---------- */
 
-QFrame {
-    background-color: #3F5FA8;
-    border-radius: 10px;
+QWidget#sidebar {
+    background-color: #1B1E26;
+    border-right: 1px solid #2C313D;
 }
 
-
-/* =========================
-   TEXT AREAS
-========================= */
-
-QTextEdit {
-    background-color: #3F5FA8;
-    color: white;
-    border: none;
+QLabel#sidebarSection {
+    color: #5F6679;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    padding: 0 10px 6px 10px;
 }
-
-QPlainTextEdit {
-    background-color: #3F5FA8;
-    color: white;
-    border: none;
-}
-
-
-/* =========================
-   INPUT FIELDS
-========================= */
-
-QLineEdit {
-    background-color: #3F5FA8;
-    color: white;
-    border-radius: 6px;
-    padding: 6px;
-    border: 1px solid #7093EF;
-}
-
-QLineEdit:focus {
-    border: 1px solid #9FB8F5;
-}
-
-
-/* =========================
-   BUTTONS
-========================= */
-
-QPushButton {
-    background-color: white;
-    color: #1E2A4A;
-    border-radius: 8px;
-    padding: 8px;
-    font-weight: bold;
-}
-
-QPushButton:hover {
-    background-color: #D6E1FF;
-}
-
-
-/* =========================
-   SIDEBAR NAVIGATION
-========================= */
 
 QPushButton#navButton {
-    background-color: #3F5FA8;
-    color: white;
-    text-align: left;
+    background-color: transparent;
+    color: #A3A9B8;
+    border: none;
+    border-radius: 8px;
     padding: 10px 12px;
+    text-align: left;
+    font-weight: 500;
 }
 
 QPushButton#navButton:hover {
-    background-color: #7093EF;
+    background-color: #242833;
+    color: #E8EAF0;
 }
 
+/* Blue glow that fades to the right, with an accent bar on the left */
 QPushButton#navButton:checked {
-    background-color: white;
-    color: #1E2A4A;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(59, 130, 246, 0.30), stop:1 rgba(56, 189, 248, 0.03));
+    border-left: 3px solid #3B82F6;
+    padding-left: 9px;
+    color: #BFDBFE;
+    font-weight: 600;
 }
 
 
-/* =========================
-   PRIMARY BUTTON
-========================= */
+/* ---------- Page titles and text ---------- */
 
-QPushButton#primaryBtn {
-    background-color: white;
-    color: #1E2A4A;
+QLabel#pageTitle {
+    font-size: 26px;
+    font-weight: 600;
 }
 
-QPushButton#primaryBtn:hover {
-    background-color: #D6E1FF;
+QLabel#mutedLabel {
+    color: #8B92A5;
+}
+
+QLabel#fieldLabel {
+    color: #6F7689;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1px;
 }
 
 
-/* =========================
-   SPINBOX
-========================= */
+/* ---------- Card panel ---------- */
 
-QSpinBox {
-    background-color: #3F5FA8;
-    color: white;
+/* Very subtle blue light from the top-left corner */
+QWidget#cardPanel {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #1C2433, stop:0.5 #1B1E26, stop:1 #1B1E26);
+    border: 1px solid #2C313D;
+    border-radius: 16px;
+}
+
+QLabel#cardImage {
+    background-color: #242833;
+    border-radius: 14px;
+    color: #6F7689;
+}
+
+QLabel#cardName {
+    font-size: 28px;
+    font-weight: 700;
+}
+
+QLabel#cardType {
+    color: #A3A9B8;
+    font-size: 15px;
+}
+
+QLabel#manaCost {
+    background-color: #242833;
     border-radius: 6px;
+    padding: 4px 10px;
+    font-family: "Consolas";
+    font-weight: 600;
+}
+
+/* The text and border color are set from code depending on the rarity */
+QLabel#rarityBadge {
+    border: 1px solid;
+    border-radius: 10px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QLabel#statusLabel {
+    color: #8B92A5;
+}
+
+QLabel#statusLabel[state="success"] {
+    color: #4ADE80;
+}
+
+QLabel#statusLabel[state="error"] {
+    color: #F87171;
+}
+
+/* "In your collection: 3 of this edition · 5 in total" */
+QLabel#ownedLabel {
+    color: #7DD3FC;
+    font-size: 13px;
+}
+
+
+/* ---------- Dialogs and menus ---------- */
+
+QDialog,
+QMessageBox {
+    background-color: #1B1E26;
+}
+
+QLabel#dialogTitle {
+    font-size: 22px;
+    font-weight: 700;
+}
+
+QMessageBox QPushButton {
+    min-width: 80px;
+}
+
+QMenu {
+    background-color: #1B1E26;
+    border: 1px solid #2C313D;
+    border-radius: 8px;
+    padding: 6px;
+}
+
+QMenu::item {
+    padding: 8px 22px 8px 14px;
+    border-radius: 6px;
+}
+
+QMenu::item:selected {
+    background-color: #2563EB;
+}
+
+QMenu::item:disabled {
+    color: #5F6679;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #2C313D;
+    margin: 4px 6px;
+}
+
+
+/* ---------- Buttons ---------- */
+
+QPushButton {
+    background-color: #242833;
+    color: #E8EAF0;
+    border: 1px solid #2C313D;
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-weight: 600;
+}
+
+QPushButton:hover {
+    background-color: #2C313D;
+}
+
+QPushButton#primaryButton {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #2563EB, stop:1 #38BDF8);
+    border: none;
+    color: white;
+}
+
+QPushButton#primaryButton:hover {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #3B82F6, stop:1 #7DD3FC);
+}
+
+QPushButton#primaryButton:pressed {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #1D4ED8, stop:1 #0EA5E9);
+}
+
+/* Destructive actions (delete): red only on hover, so it never shouts */
+QPushButton#dangerButton {
+    background-color: transparent;
+    color: #F87171;
+    border: 1px solid rgba(248, 113, 113, 0.45);
+}
+
+QPushButton#dangerButton:hover {
+    background-color: rgba(248, 113, 113, 0.14);
+    border: 1px solid #F87171;
+}
+
+QPushButton:disabled,
+QPushButton#primaryButton:disabled,
+QPushButton#dangerButton:disabled {
+    background-color: #242833;
+    color: #5F6679;
+    border: none;
+}
+
+
+/* ---------- Inputs ---------- */
+
+QLineEdit,
+QComboBox,
+QSpinBox {
+    background-color: #111318;
+    border: 1px solid #2C313D;
+    border-radius: 8px;
+    padding: 8px 10px;
+    selection-background-color: #2563EB;
+}
+
+QLineEdit:focus,
+QComboBox:focus,
+QSpinBox:focus {
+    border: 1px solid #3B82F6;
+}
+
+QLineEdit#searchInput {
+    background-color: #111318;
+    padding: 9px 14px;
+}
+
+QComboBox:disabled {
+    color: #6F7689;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 28px;
+}
+
+QComboBox::down-arrow {
+    image: url(@ASSETS@/icons/chevron-down.svg);
+    width: 12px;
+    height: 12px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #1B1E26;
+    border: 1px solid #2C313D;
+    selection-background-color: #2563EB;
+    selection-color: white;
+    outline: none;
     padding: 4px;
-    border: 1px solid #7093EF;
 }
 
 QSpinBox::up-button,
 QSpinBox::down-button {
-    background-color: white;
+    background: transparent;
+    border: none;
+    width: 20px;
+}
+
+QSpinBox::up-arrow {
+    image: url(@ASSETS@/icons/chevron-up.svg);
+    width: 10px;
+    height: 10px;
+}
+
+QSpinBox::down-arrow {
+    image: url(@ASSETS@/icons/chevron-down.svg);
+    width: 10px;
+    height: 10px;
 }
 
 
-/* =========================
-   TABLE
-========================= */
+/* ---------- Collection table ---------- */
 
-QTableWidget {
-    background-color: #3F5FA8;
-    border-radius: 10px;
-    gridline-color: #1E2A4A;
-    color: white;
+QTableWidget#collectionTable {
+    background-color: #1B1E26;
+    border: 1px solid #2C313D;
+    border-radius: 12px;
+    padding: 4px;
+    outline: 0;
+    /* Solid colors: a translucent one would let Qt's default highlight show through */
+    selection-background-color: #1F2B44;
+    selection-color: #E8EAF0;
 }
 
-QTableWidget::item {
-    padding: 6px;
+QTableWidget#collectionTable QSpinBox {
+    padding: 6px 4px;
 }
 
-QTableWidget::item:selected {
-    background-color: #7093EF;
+QTableWidget#collectionTable::item {
+    border-bottom: 1px solid #242833;
+    padding: 0 10px;
 }
 
+QTableWidget#collectionTable::item:hover {
+    background-color: #20232C;
+}
 
-/* =========================
-   TABLE HEADER
-========================= */
+QTableWidget#collectionTable::item:selected {
+    background-color: #1F2B44;
+    color: #E8EAF0;
+}
 
 QHeaderView::section {
-    background-color: #7093EF;
-    color: white;
-    padding: 6px;
+    background-color: #1B1E26;
+    color: #6F7689;
+    border: none;
+    border-bottom: 1px solid #2C313D;
+    padding: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+QTableCornerButton::section {
+    background-color: #1B1E26;
     border: none;
 }
 
 
-/* =========================
-   SCROLLBAR
-========================= */
+/* ---------- Scrollbars ---------- */
 
 QScrollBar:vertical {
-    background: #1E2A4A;
+    background: transparent;
     width: 10px;
+    margin: 4px 2px;
 }
 
 QScrollBar::handle:vertical {
-    background: #7093EF;
-    border-radius: 5px;
+    background: #2C313D;
+    border-radius: 3px;
+    min-height: 40px;
 }
 
 QScrollBar::handle:vertical:hover {
-    background: #9FB8F5;
+    background: #3A4050;
 }
 
-/* =========================
-   REMOVE UNWANTED LINES
-========================= */
-
-QFrame {
-    border: none;
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: none;
+    height: 0;
 }
 
-QGroupBox {
-    border: none;
-}
 
-QGroupBox::title {
-    background-color: #1E2A4A;
+/* ---------- Tooltips ---------- */
+
+QToolTip {
+    background-color: #242833;
+    color: #E8EAF0;
+    border: 1px solid #2C313D;
+    padding: 6px;
 }
