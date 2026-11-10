@@ -544,6 +544,33 @@ def add_collection_cards_to_deck(deck_id, cards, quantity, section):
     return added, not_found
 
 
+@dataclass
+class DeckSummary:
+    """What other pages (life counter) need to know about a deck."""
+
+    deck: object
+    commanders: list          # Card objects (0, 1 or 2)
+    bracket: object           # BracketEstimate or None (not Commander / lists not ready)
+
+
+def deck_summary(deck_id):
+    """DeckSummary of a deck, or None if it doesn't exist anymore."""
+
+    deck = deck_manager.get_deck(deck_id)
+    if deck is None:
+        return None
+
+    entries = deck_manager.get_deck_cards(deck_id)
+    commanders = [entry.card for entry in entries if entry.section == "commander"]
+
+    bracket = None
+    if is_commander_format(deck.format):
+        from services.bracket_service import estimate_bracket
+        bracket = estimate_bracket(entries)
+
+    return DeckSummary(deck=deck, commanders=commanders, bracket=bracket)
+
+
 def create_deck_from_list(name, deck_format, found):
     """
     Create a deck from an imported list. found is [(ListEntry, Card)] as
@@ -569,4 +596,5 @@ __all__ = [
     "remove_deck_cards", "move_deck_card", "change_deck_card_printing", "create_deck_from_list",
     "MissingCard", "collection_counts", "needed_counts", "missing_cards", "add_to_collection",
     "DeckStats", "deck_stats", "CURVE_MAX", "add_collection_cards_to_deck",
+    "DeckSummary", "deck_summary",
 ]

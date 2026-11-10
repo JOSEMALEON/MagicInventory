@@ -58,6 +58,8 @@ class Player:
     city_blessing: bool = False
     # Damage received from each commander: {"<source index>:<commander 0|1>": amount}
     commander_damage: dict = field(default_factory=dict)
+    # The deck this player is using (id in the decks table), or None
+    deck_id: int = None
 
     def damage_from(self, source, commander=0):
         return self.commander_damage.get(f"{source}:{commander}", 0)
@@ -111,6 +113,7 @@ def game_from_dict(data):
         player.casts = list(item.get("casts", [0, 0]))[:2] + [0] * (2 - len(item.get("casts", [0, 0])[:2]))
         player.city_blessing = bool(item.get("city_blessing", False))
         player.commander_damage = {k: int(v) for k, v in item.get("commander_damage", {}).items()}
+        player.deck_id = item.get("deck_id")
         players.append(player)
 
     return Game(
@@ -199,6 +202,7 @@ class LifeCounter:
             if keep_names and index < len(old):
                 player.color = old[index].color
                 player.partner = old[index].partner
+                player.deck_id = old[index].deck_id
 
         self.game = game
         self._changed()
@@ -253,11 +257,20 @@ class LifeCounter:
         to the first, so nothing is lost.
         """
 
+        if self.game.players[index].partner == partner:
+            return
+
+        self._remember()
+        self._apply_partner(index, partner)
+        self._changed()
+
+    def _apply_partner(self, index, partner):
+        """Change Partner without saving/remembering (the caller does it)."""
+
         player = self.game.players[index]
         if player.partner == partner:
             return
 
-        self._remember()
         player.partner = partner
 
         if not partner:
@@ -267,8 +280,6 @@ class LifeCounter:
                     key = f"{index}:0"
                     other.commander_damage[key] = other.commander_damage.get(key, 0) + second
             player.casts = [player.casts[0] + player.casts[1], 0]
-
-        self._changed()
 
     # ---------- Counters and markers ----------
 
@@ -305,6 +316,24 @@ class LifeCounter:
         self._remember()
         current = getattr(self.game, marker)
         setattr(self.game, marker, None if current == index else index)
+        self._changed()
+
+    def set_player(self, index, name, deck_id, partner=None):
+        """
+        Name and deck of a player in one undoable change. partner=True/False
+        also sets Partner (a deck with two commanders); None leaves it.
+        """
+
+        player = self.game.players[index]
+
+        # One snapshot: undo restores name, deck and Partner together
+        self._remember()
+        player.name = name.strip() or player.name
+        player.deck_id = deck_id
+
+        if partner is not None:
+            self._apply_partner(index, partner)
+
         self._changed()
 
     def rename(self, index, name):

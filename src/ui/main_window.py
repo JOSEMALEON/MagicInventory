@@ -234,7 +234,7 @@ class MainWindow(QWidget):
         )
         self.pages.addWidget(self.decks_page)
 
-        self.life_page = LifePage()
+        self.life_page = LifePage(self.background)
         self.pages.addWidget(self.life_page)
 
         body_layout.addWidget(self._build_sidebar())
@@ -670,6 +670,10 @@ class MainWindow(QWidget):
         self.pages.setCurrentWidget(page)
 
         # Prices and currency may have changed since the deck was drawn
+        if page is self.life_page:
+            # Decks may have changed (commander, cards, bracket)
+            self.life_page.reload_decks()
+
         if page is self.decks_page:
             self.decks_page.refresh_deck()
 

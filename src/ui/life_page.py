@@ -5,10 +5,19 @@ Life counter page: up to 6 player panels with life, commander damage
 
 import random
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QKeySequence, QShortcut
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor,
+    QImage,
+    QKeySequence,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
@@ -20,8 +29,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from services import deck_service as decks
 from services import life_service as life
+from services.image_service import art_crop_url, load_card_image
+from src.ui.dice import DiceDialog
 from src.ui.widgets import set_status
+
+# Part of the panel (from the top) covered by the commander's illustration
+ART_HEIGHT_RATIO = 0.62
+
+# Brackets this far apart get a warning ("B4 vs B2")
+BRACKET_WARNING_GAP = 2
 
 # The last life change ("-7") disappears after this long
 CHANGE_VISIBLE_MS = 2000
@@ -64,6 +82,78 @@ class ClickBox(QLabel):
             self.changed.emit(-1)
 
 
+class PlayerSetupDialog(QDialog):
+    """Name and deck of a player (opened by clicking the name)."""
+
+    def __init__(self, player, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle("Player")
+        self.setModal(True)
+        self.setMinimumWidth(440)
+
+        title = QLabel("Player")
+        title.setObjectName("dialogTitle")
+
+        name_label = QLabel("NAME")
+        name_label.setObjectName("fieldLabel")
+
+        self.name_input = QLineEdit(player.name)
+        self.name_input.setMaxLength(24)
+        self.name_input.selectAll()
+
+        deck_label = QLabel("DECK")
+        deck_label.setObjectName("fieldLabel")
+
+        self.deck_input = QComboBox()
+        self.deck_input.addItem("No deck", None)
+        for deck in decks.get_decks():
+            self.deck_input.addItem(f"{deck.name}  ·  {decks.format_label(deck.format)}", deck.id)
+
+        index = self.deck_input.findData(player.deck_id)
+        self.deck_input.setCurrentIndex(index if index >= 0 else 0)
+
+        hint = QLabel("The deck's commander is shown in the panel, with its bracket.\n"
+                      "Decks with two commanders turn Partner on.")
+        hint.setObjectName("mutedLabel")
+
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+
+        save = QPushButton("Save")
+        save.setObjectName("primaryButton")
+        save.setDefault(True)
+        save.clicked.connect(self.accept)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(8)
+        layout.addWidget(title)
+        layout.addSpacing(6)
+        layout.addWidget(name_label)
+        layout.addWidget(self.name_input)
+        layout.addSpacing(6)
+        layout.addWidget(deck_label)
+        layout.addWidget(self.deck_input)
+        layout.addWidget(hint)
+        layout.addSpacing(10)
+        layout.addLayout(buttons)
+        self.setLayout(layout)
+
+    @property
+    def name(self):
+        return self.name_input.text()
+
+    @property
+    def deck_id(self):
+        return self.deck_input.currentData()
+
+
 class PlayerPanel(QWidget):
     """
     One player. The page rebuilds the panels when the number of players or
@@ -87,12 +177,36 @@ class PlayerPanel(QWidget):
 
         # ---------- Header: name, markers, partner ----------
 
-        self.name_input = QLineEdit(player.name)
-        self.name_input.setObjectName("playerName")
-        self.name_input.setMaxLength(24)
-        self.name_input.editingFinished.connect(
-            lambda: self.page.counter_action(lambda c: c.rename(self.index, self.name_input.text()))
-        )
+        # Click the name to change it and choose the player's deck
+        self.name_button = QPushButton(player.name)
+        self.name_button.setObjectName("playerName")
+        self.name_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.name_button.setToolTip("Change the name and choose this player's deck")
+        self.name_button.clicked.connect(lambda: self.page.edit_player(self.index))
+
+        # "Riders of Rohan" + "B3" under the name, when a deck is chosen
+        self.deck_label = QLabel()
+        self.deck_label.setObjectName("playerDeck")
+
+        self.bracket_badge = QLabel()
+        self.bracket_badge.setObjectName("bracketBadge")
+
+        deck_row = QHBoxLayout()
+        deck_row.setContentsMargins(6, 0, 0, 0)
+        deck_row.setSpacing(6)
+        deck_row.addWidget(self.deck_label)
+        deck_row.addWidget(self.bracket_badge)
+        deck_row.addStretch()
+
+        name_box = QVBoxLayout()
+        name_box.setSpacing(0)
+        name_box.addWidget(self.name_button, 0, Qt.AlignmentFlag.AlignLeft)
+        name_box.addLayout(deck_row)
+
+        # Commander illustration painted behind the panel (see paintEvent)
+        self._art = None
+        self._art_url = None
+        self._faded_art = None
 
         self.starts_label = QLabel("Starts")
         self.starts_label.setObjectName("startsBadge")
@@ -125,12 +239,12 @@ class PlayerPanel(QWidget):
 
         header = QHBoxLayout()
         header.setSpacing(6)
-        header.addWidget(self.name_input, 1)
-        header.addWidget(self.starts_label)
-        header.addWidget(self.monarch_button)
-        header.addWidget(self.initiative_button)
-        header.addWidget(self.blessing_button)
-        header.addWidget(self.partner_button)
+        header.addLayout(name_box, 1)
+        header.addWidget(self.starts_label, 0, Qt.AlignmentFlag.AlignTop)
+        header.addWidget(self.monarch_button, 0, Qt.AlignmentFlag.AlignTop)
+        header.addWidget(self.initiative_button, 0, Qt.AlignmentFlag.AlignTop)
+        header.addWidget(self.blessing_button, 0, Qt.AlignmentFlag.AlignTop)
+        header.addWidget(self.partner_button, 0, Qt.AlignmentFlag.AlignTop)
 
         # ---------- Life ----------
 
@@ -265,6 +379,118 @@ class PlayerPanel(QWidget):
             }}
         """)
 
+    # ---------- Deck: name, bracket and commander art ----------
+
+    def _refresh_deck(self):
+
+        summary = self.page.deck_summary(self.player.deck_id)
+
+        if summary is None:
+            self.deck_label.setText("Click the name to choose a deck")
+            self.deck_label.setProperty("empty", True)
+            self.bracket_badge.hide()
+            self._set_art_url(None)
+        else:
+            self.deck_label.setText(summary.deck.name)
+            self.deck_label.setProperty("empty", False)
+
+            estimate = summary.bracket
+            if estimate is not None:
+                self.bracket_badge.setText(estimate.short_label.replace("Bracket ", "B"))
+                self.bracket_badge.setToolTip(estimate.label + "\n" + "\n".join(estimate.reasons))
+                self.bracket_badge.setProperty("bracket", str(estimate.bracket))
+                self.bracket_badge.show()
+            else:
+                self.bracket_badge.hide()
+
+            commander = summary.commanders[0] if summary.commanders else None
+            self._set_art_url(art_crop_url(commander.image_url) if commander else None)
+
+        _repolish(self.deck_label)
+        _repolish(self.bracket_badge)
+
+    def _set_art_url(self, url):
+
+        if url == self._art_url:
+            return
+
+        self._art_url = url
+        self._art = None
+        self._faded_art = None
+        self.update()
+
+        if url:
+            self.page.load_art(url, self._on_art_loaded)
+
+    def _on_art_loaded(self, url, image):
+
+        # The deck may have changed while the image was loading
+        if url != self._art_url or image is None:
+            return
+
+        self._art = image
+        self._faded_art = None
+        self.update()
+
+    def _prepare_art(self):
+        """
+        The illustration covering the top of the panel, fading out towards
+        the life total so the numbers stay readable.
+        """
+
+        width = self.width()
+        height = int(self.height() * ART_HEIGHT_RATIO)
+
+        if self._art is None or width <= 0 or height <= 0:
+            return None
+
+        scaled = self._art.scaled(
+            width, height,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        x = (scaled.width() - width) // 2
+        y = (scaled.height() - height) // 3
+        faded = scaled.copy(x, y, width, height).convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+
+        fade = QLinearGradient(0, 0, 0, height)
+        fade.setColorAt(0.0, QColor(0, 0, 0, 120))
+        fade.setColorAt(0.55, QColor(0, 0, 0, 55))
+        fade.setColorAt(1.0, QColor(0, 0, 0, 0))
+
+        painter = QPainter(faded)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        painter.fillRect(faded.rect(), fade)
+        painter.end()
+
+        return faded
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._faded_art = None
+
+    def paintEvent(self, event):
+
+        # The stylesheet background first (WA_StyledBackground), then the art
+        super().paintEvent(event)
+
+        if self._art is None:
+            return
+
+        if self._faded_art is None or self._faded_art.width() != self.width():
+            self._faded_art = self._prepare_art()
+            if self._faded_art is None:
+                return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(self.rect()).adjusted(1, 4, -1, -1), 13, 13)
+        painter.setClipPath(clip)
+        painter.drawImage(0, 4, self._faded_art)
+        painter.end()
+
     def set_starts_glow(self, on):
         """The "Starts" badge shines for a few seconds after the animation."""
         self.starts_label.setProperty("glow", on)
@@ -349,8 +575,8 @@ class PlayerPanel(QWidget):
 
         self.life_label.setText(str(player.life))
 
-        if self.name_input.text() != player.name and not self.name_input.hasFocus():
-            self.name_input.setText(player.name)
+        self.name_button.setText(player.name)
+        self._refresh_deck()
 
         for (source, commander), box in self.damage_boxes.items():
             damage = player.damage_from(source, commander)
@@ -392,13 +618,23 @@ def _repolish(widget):
 class LifePage(QWidget):
     """The life counter page."""
 
-    def __init__(self):
+    def __init__(self, background=None):
         super().__init__()
+
+        # Loads the commanders' illustrations without freezing the window
+        self.background = background
 
         # Continue the saved game, if any
         saved = life.load_game()
         self.counter = life.LifeCounter(saved or life.new_game(4, life.DEFAULT_STARTING_LIFE))
         self.panels = []
+
+        # {deck id: DeckSummary} and {art url: QImage}, so panels don't
+        # query the database / disk on every click
+        self._summaries = {}
+        self._art_cache = {}
+
+        self.dice_dialog = None
 
         # Each "Who starts?" animation gets an id: a newer one (or new panels) stops the old
         self._spin_id = 0
@@ -440,6 +676,17 @@ class LifePage(QWidget):
         self.status_label = QLabel()
         self.status_label.setObjectName("statusLabel")
 
+        dice_button = QPushButton("🎲 Dice")
+        dice_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        dice_button.setToolTip("Roll a d4, d6, d8, d10, d12 or d20")
+        dice_button.clicked.connect(self.show_dice)
+
+        # "⚠ Brackets don't match: José B4 · Ana B2"
+        self.bracket_warning = QLabel()
+        self.bracket_warning.setObjectName("bracketWarning")
+        self.bracket_warning.setWordWrap(True)
+        self.bracket_warning.hide()
+
         top = QHBoxLayout()
         top.setSpacing(10)
         top.addWidget(title)
@@ -451,6 +698,7 @@ class LifePage(QWidget):
         top.addWidget(new_game_button)
         top.addStretch()
         top.addWidget(self.status_label)
+        top.addWidget(dice_button)
         top.addWidget(first_button)
         top.addWidget(self.undo_button)
 
@@ -466,6 +714,7 @@ class LifePage(QWidget):
         layout.setContentsMargins(32, 28, 32, 28)
         layout.setSpacing(16)
         layout.addLayout(top)
+        layout.addWidget(self.bracket_warning)
         layout.addWidget(grid_widget, 1)
         self.setLayout(layout)
 
@@ -508,11 +757,133 @@ class LifePage(QWidget):
             self.panels.append(panel)
 
         self.undo_button.setEnabled(self.counter.can_undo())
+        self._update_bracket_warning()
 
     def refresh(self):
         for panel in self.panels:
             panel.refresh()
         self.undo_button.setEnabled(self.counter.can_undo())
+        self._update_bracket_warning()
+
+    # ---------- Decks of the players ----------
+
+    def deck_summary(self, deck_id):
+        """DeckSummary of a player's deck (cached), or None."""
+
+        if deck_id is None:
+            return None
+
+        if deck_id not in self._summaries:
+            self._summaries[deck_id] = decks.deck_summary(deck_id)
+
+        return self._summaries[deck_id]
+
+    def reload_decks(self):
+        """
+        Decks may have changed in the Decks page (cards, commander, bracket):
+        forget the cached summaries and redraw. Called when the page is shown.
+        """
+
+        self._summaries = {}
+        self.refresh()
+
+    def load_art(self, url, callback):
+        """
+        callback(url, QImage) with a commander's illustration, from memory,
+        or loaded in the background the first time.
+        """
+
+        if url in self._art_cache:
+            callback(url, self._art_cache[url])
+            return
+
+        def loaded(image):
+            if image is not None:
+                self._art_cache[url] = image
+            callback(url, image)
+
+        if self.background is None:
+            loaded(load_card_image(url, width=640, rounded=False))
+        else:
+            self.background.run(
+                lambda: load_card_image(url, width=640, rounded=False),
+                on_success=loaded,
+            )
+
+    def edit_player(self, index):
+        """Name and deck of a player (clicking the name)."""
+
+        player = self.counter.game.players[index]
+        dialog = PlayerSetupDialog(player, self)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        deck_id = dialog.deck_id
+        summary = self.deck_summary(deck_id)
+
+        # A deck with two commanders (Partner, Background…) turns Partner on,
+        # one commander turns it off; no deck leaves it as it is
+        partner = None
+        if summary is not None and summary.commanders:
+            partner = len(summary.commanders) >= 2
+
+        partner_changed = partner is not None and partner != player.partner
+
+        self.counter.set_player(index, dialog.name, deck_id, partner)
+
+        if partner_changed:
+            self.rebuild()
+        else:
+            self.refresh()
+
+        if summary is not None:
+            set_status(self.status_label, f"{self.counter.game.players[index].name} plays {summary.deck.name}.", "success")
+
+    def _update_bracket_warning(self):
+        """
+        Warn when the Commander decks at the table are 2+ brackets apart
+        (brackets are meant to be agreed before the game).
+        """
+
+        brackets = []
+        for player in self.counter.game.players:
+            summary = self.deck_summary(player.deck_id)
+            if summary is not None and summary.bracket is not None:
+                brackets.append((player.name, summary.bracket))
+
+        if len(brackets) < 2:
+            self.bracket_warning.hide()
+            return
+
+        lowest = min(estimate.bracket for _, estimate in brackets)
+        highest = max(estimate.bracket for _, estimate in brackets)
+
+        if highest - lowest < BRACKET_WARNING_GAP:
+            self.bracket_warning.hide()
+            return
+
+        parts = [
+            f"{name} {estimate.short_label.replace('Bracket ', 'B')}"
+            for name, estimate in sorted(brackets, key=lambda item: -item[1].bracket)
+        ]
+        self.bracket_warning.setText(
+            "⚠ The decks' brackets don't match: " + " · ".join(parts)
+            + ". Talk about it before playing (or pick other decks)."
+        )
+        self.bracket_warning.show()
+
+    # ---------- Dice ----------
+
+    def show_dice(self):
+        """The dice window (not modal: it can stay open during the game)."""
+
+        if self.dice_dialog is None:
+            self.dice_dialog = DiceDialog(self)
+
+        self.dice_dialog.show()
+        self.dice_dialog.raise_()
+        self.dice_dialog.activateWindow()
 
     def counter_action(self, action):
         """Run a change on the game and redraw the values."""

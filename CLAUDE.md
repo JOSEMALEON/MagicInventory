@@ -30,7 +30,8 @@ src/ui/got_it_dialog.py      -> GotItDialog: registrar copias compradas de una c
 src/ui/add_to_deck_dialog.py -> AddToDeckDialog: añadir cartas de la colección a un mazo (o a uno nuevo)
 src/ui/deck_visual.py        -> DeckVisualView / CardTile: vista visual del mazo con miniaturas
 src/ui/flow_layout.py        -> FlowLayout: coloca widgets en filas que se ajustan al ancho
-src/ui/life_page.py          -> LifePage (contador de vidas) y PlayerPanel (un jugador)
+src/ui/life_page.py          -> LifePage (contador de vidas), PlayerPanel (un jugador), PlayerSetupDialog
+src/ui/dice.py               -> DiceDialog / DieWidget: dados d4-d20 dibujados y animados
 services/life_service.py     -> lógica del contador (sin Qt): Game/Player, LifeCounter (cambios + deshacer),
                                 guardado en cache/life_game.json
 src/ui/charts.py             -> BarChart (curva de maná) y HorizontalBars (colores, tipos) con QPainter
@@ -448,10 +449,36 @@ Decisiones del autor:
   `_spin_id` cancela la animación si se reconstruyen los paneles (`rebuild()` lo incrementa).
 - Ojo: al reconstruir paneles, `hide()` + `setParent(None)` antes de `deleteLater()` (si no, los
   viejos se siguen dibujando debajo hasta que Qt los borra).
-- Ideas para siguientes fases (lluvia de ideas del 10 nov): elegir mazo por jugador (arte y colores
-  del comandante, vida según formato, aviso de brackets descompensados), estadísticas por mazo,
-  contador de turnos y temporizador, dados, historial y gráfico de vidas, Planechase/Archenemy,
-  atajos de teclado, ventana aparte.
+### Fase 2 hecha (10 nov 2026 — commit PENDING): mazos por jugador y dados
+- **Mazo por jugador** (pedido por el autor): clic en el nombre -> `PlayerSetupDialog` (nombre +
+  mazo). `Player.deck_id` (guardado en el JSON). `LifeCounter.set_player()` cambia nombre, mazo y
+  Partner en **un solo** paso de deshacer (`_apply_partner` compartido con `set_partner`).
+  - Un mazo con 2 comandantes activa Partner; con 1 lo desactiva; sin mazo no lo toca.
+  - Panel: bajo el nombre, el mazo y su insignia de bracket ("B3", colores de `bracketBadge`);
+    de fondo el `art_crop` del primer comandante en el 62 % superior, fundido hacia abajo
+    (`PlayerPanel.paintEvent`, después del fondo del stylesheet).
+  - `deck_service.deck_summary(deck_id)` -> `DeckSummary(deck, commanders, bracket)`; la página los
+    cachea (`_summaries`) y los recarga al mostrarse (`reload_decks`, desde `MainWindow.show_page`).
+  - **Aviso** arriba si los brackets de la mesa se separan 2 o más (`BRACKET_WARNING_GAP`).
+  - El color de asiento se mantiene (identifica las casillas de daño de comandante).
+- **Dados** (src/ui/dice.py): botón "🎲 Dice" -> `DiceDialog` no modal con d4/d6/d8/d10/d12/d20,
+  cada uno con su forma (triángulo, cuadrado, rombo, cometa, pentágono, hexágono con cara triangular).
+  Animación: 14 pasos de 35 ms a ~215 ms con números al azar y giro que se frena; al final el
+  resultado con borde verde (solo el último dado tirado), texto "d20: 17 (max!)" e historial (30).
+- Ideas pendientes: estadísticas por mazo, contador de turnos y temporizador, historial y gráfico
+  de vidas, Planechase/Archenemy, atajos de teclado, ventana aparte.
+
+### Idea futura: varias colecciones con nombre (pedida por el autor, sin implementar)
+- Tabla `collections (id, name, color/icono, notes, created_at)` y `cards.collection_id`
+  (migración: todo a una colección "Main collection"). Selector de colección en la cabecera de
+  Collection y en Search/Import ("Add to: …"); opción "All collections" con totales sumados.
+- Usos típicos: binder de intercambio, cartas en mazos físicos, wishlist, cartas prestadas, cajas
+  por ubicación ("Caja 1", "Carpeta azul"), colección de foils/altered.
+- Mover/copiar cartas entre colecciones (menú contextual, con cantidades parciales); exportar e
+  importar por colección; valor y estadísticas por colección.
+- "Tengo" en los mazos: elegir qué colecciones cuentan (p. ej. excluir la wishlist o el binder de
+  intercambio); "Got it…" pregunta a qué colección añadir.
+- Wishlist especial: no cuenta como "tengo", con precio objetivo y aviso cuando baje el precio.
 
 ## Pendiente
 

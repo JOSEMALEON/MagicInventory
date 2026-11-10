@@ -623,18 +623,56 @@ QLabel#visualGroupTitleMissing {
 
 /* ---------- Life counter ---------- */
 
-QLineEdit#playerName {
+/* The player's name: click it to rename and choose a deck */
+QPushButton#playerName {
     background-color: transparent;
     border: 1px solid transparent;
+    border-radius: 8px;
     font-size: 16px;
     font-weight: 700;
-    padding: 4px 6px;
+    padding: 3px 6px;
+    text-align: left;
 }
 
-QLineEdit#playerName:hover,
-QLineEdit#playerName:focus {
+QPushButton#playerName:hover {
+    background-color: rgba(17, 19, 24, 0.7);
+    border: 1px solid #2C313D;
+}
+
+QLabel#playerDeck {
+    color: #C9CED8;
+    font-size: 12px;
+}
+
+QLabel#playerDeck[empty="true"] {
+    color: #6F7689;
+    font-style: italic;
+}
+
+QLabel#bracketWarning {
+    background-color: rgba(251, 191, 36, 0.12);
+    border: 1px solid rgba(251, 191, 36, 0.45);
+    border-radius: 10px;
+    color: #FBBF24;
+    padding: 8px 12px;
+    font-weight: 600;
+}
+
+/* Dice window */
+QLabel#diceResult {
+    font-size: 26px;
+    font-weight: 800;
+    color: #4ADE80;
+    padding: 4px;
+}
+
+QListWidget#diceHistory {
     background-color: #111318;
     border: 1px solid #2C313D;
+    border-radius: 10px;
+    color: #C9CED8;
+    padding: 4px;
+    outline: 0;
 }
 
 QLabel#lifeTotal {
