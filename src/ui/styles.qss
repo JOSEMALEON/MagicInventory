@@ -520,6 +520,96 @@ QLabel#bracketDetails {
     font-size: 13px;
 }
 
+/* List / Stats switch */
+QPushButton#segmentButton {
+    background-color: transparent;
+    color: #A3A9B8;
+    border: 1px solid #2C313D;
+    border-radius: 8px;
+    padding: 6px 14px;
+}
+
+QPushButton#segmentButton:hover {
+    background-color: #242833;
+}
+
+QPushButton#segmentButton:checked {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(37, 99, 235, 0.45), stop:1 rgba(56, 189, 248, 0.25));
+    border: 1px solid #3B82F6;
+    color: white;
+}
+
+QCheckBox {
+    color: #C9CED8;
+    spacing: 8px;
+}
+
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #3A4050;
+    border-radius: 4px;
+    background-color: #111318;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #2563EB;
+    border: 1px solid #3B82F6;
+    image: url(@ASSETS@/icons/check.svg);
+}
+
+QCheckBox:disabled {
+    color: #5F6679;
+}
+
+/* "Missing: 12 cards · €48.30" */
+QWidget#missingBar {
+    background-color: #1B1E26;
+    border: 1px solid #2C313D;
+    border-radius: 10px;
+}
+
+QLabel#missingSummary {
+    font-weight: 600;
+}
+
+QLabel#missingSummary[state="error"] {
+    color: #F87171;
+}
+
+QLabel#missingSummary[state="success"] {
+    color: #4ADE80;
+}
+
+QLabel#missingCount {
+    color: #F87171;
+    font-weight: 700;
+}
+
+QPushButton#gotItButton {
+    background-color: rgba(74, 222, 128, 0.12);
+    border: 1px solid rgba(74, 222, 128, 0.45);
+    color: #4ADE80;
+    padding: 3px 8px;
+    font-size: 12px;
+}
+
+QPushButton#gotItButton:hover {
+    background-color: rgba(74, 222, 128, 0.24);
+}
+
+QWidget#statsPanel {
+    background-color: #1B1E26;
+    border: 1px solid #2C313D;
+    border-radius: 12px;
+}
+
+QLabel#statsSummary {
+    color: #C9CED8;
+    font-size: 14px;
+}
+
 QLabel#foundName {
     font-weight: 600;
 }

@@ -24,6 +24,8 @@ class Card:
         color_identity=None,
         legalities=None,
         oracle_text=None,
+        foil=False,
+        finishes=None,
     ):
 
         self.name = name
@@ -60,12 +62,31 @@ class Card:
         self.legalities = legalities or {}              # e.g. {"commander": "legal", ...}
         self.oracle_text = oracle_text or ""            # rules text (faces joined by "//")
 
+        # Collection copies: foil or not. Each finish is its own collection row.
+        self.foil = bool(foil)
+
+        # Finishes this printing exists in, from Scryfall: ["nonfoil", "foil",
+        # "etched"]. Only known for cards that come from Scryfall (not stored).
+        self.finishes = finishes or []
+
+
+    @property
+    def can_be_foil(self):
+        """False only when Scryfall says this printing has no foil version."""
+        return not self.finishes or "foil" in self.finishes or "etched" in self.finishes
+
+
+    @property
+    def only_foil(self):
+        """True when this printing exists only in foil (no normal version)."""
+        return bool(self.finishes) and "nonfoil" not in self.finishes
+
 
     def price(self, currency="EUR"):
         """
-        Price of one copy in "EUR" or "USD". Uses the normal (non-foil) price;
-        printings that only exist in foil fall back to the foil price.
-        Return None if Scryfall has no price.
+        Price of one copy in "EUR" or "USD" for its finish: foil copies use the
+        foil price, the rest the normal one. If that price is missing, the
+        other one is used. Return None if Scryfall has no price.
         """
 
         if currency == "USD":
@@ -73,7 +94,8 @@ class Card:
         else:
             normal, foil = self.price_eur, self.price_eur_foil
 
-        return normal if normal is not None else foil
+        first, second = (foil, normal) if self.foil else (normal, foil)
+        return first if first is not None else second
 
 
     def value(self, currency="EUR"):

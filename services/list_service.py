@@ -60,7 +60,11 @@ CSV_COLUMNS = {
     "set": ("set code", "set_code", "edition code", "set"),
     "number": ("collector number", "collector_number", "number", "cn"),
     "section": ("section", "board", "category"),
+    "foil": ("foil", "finish", "is foil", "printing"),
 }
+
+# Values of a CSV "Foil" column that mean foil
+FOIL_VALUES = {"foil", "yes", "y", "true", "1", "x", "etched", "f"}
 
 # Order and titles used when writing a deck list
 DECK_TEXT_SECTIONS = [
@@ -87,6 +91,8 @@ class ListEntry:
     collector_number: str = None
     # Deck section ("commander", "main"...); only used when importing decks
     section: str = "main"
+    # Foil copies (marked "*F*" or "*E*" in the list, or a CSV "Foil" column)
+    foil: bool = False
 
     def describe(self):
         """ "Sol Ring (CMM #410)" or just "Sol Ring". """
@@ -159,6 +165,9 @@ def _parse_card_line(number, raw_line, line):
         set_code=match["set"].lower() if match["set"] else None,
         collector_number=match["number"],
     )
+
+    if markers & {"F", "E"}:
+        entry.foil = True
 
     if "CMDR" in markers:
         entry.section = "commander"
@@ -323,6 +332,9 @@ def csv_to_list_text(content):
             if cell("number"):
                 line += f" {cell('number')}"
 
+        if cell("foil").lower() in FOIL_VALUES:
+            line += " *F*"
+
         section = cell("section")
         title = section if _section_header(section) else ""
         sections.setdefault(title, []).append(line)
@@ -412,6 +424,7 @@ def add_found_cards(found):
 
     for entry, card in found:
         card.quantity = entry.quantity
+        card.foil = entry.foil
         add_card(card)
         copies += entry.quantity
 
@@ -423,7 +436,7 @@ def add_found_cards(found):
 # ==================================
 
 CSV_HEADER = [
-    "Quantity", "Name", "Set", "Set Code", "Collector Number", "Rarity",
+    "Quantity", "Name", "Set", "Set Code", "Collector Number", "Rarity", "Foil",
     "Price EUR", "Price USD", "Value EUR", "Value USD", "Scryfall ID",
 ]
 
@@ -433,7 +446,10 @@ def _money(value):
 
 
 def card_line(card, quantity):
-    """ "3 Sol Ring (CMM) 410": quantity, name and exact edition. """
+    """
+    "3 Sol Ring (CMM) 410": quantity, name and exact edition, plus "*F*"
+    for foil copies (the marker Moxfield / Arena lists use).
+    """
 
     line = f"{quantity} {card.name}"
 
@@ -441,6 +457,9 @@ def card_line(card, quantity):
         line += f" ({card.set_code.upper()})"
         if card.collector_number:
             line += f" {card.collector_number}"
+
+    if card.foil:
+        line += " *F*"
 
     return line
 
@@ -476,22 +495,47 @@ def export_deck(path, deck_name, deck_cards):
     return len(deck_cards)
 
 
+def export_shopping_list(path, missing, currency="EUR"):
+    """
+    Save the cards a deck still needs (list of deck_service.MissingCard).
+    .csv -> spreadsheet with prices; anything else -> text list that deck
+    and shopping sites can import ("2 Sol Ring (CMM) 410").
+    Return the number of copies.
+    """
+
+    if str(path).lower().endswith(".csv"):
+        output = io.StringIO()
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow([
+            "Quantity", "Name", "Set", "Set Code", "Collector Number",
+            f"Price {currency}", f"Total {currency}",
+        ])
+
+        for item in missing:
+            card = item.entry.card
+            writer.writerow([
+                item.missing, card.name, card.set_name or "",
+                (card.set_code or "").upper(), card.collector_number or "",
+                _money(card.price(currency)), _money(item.cost(currency)),
+            ])
+
+        content, encoding = output.getvalue(), "utf-8-sig"
+    else:
+        lines = [card_line(item.entry.card, item.missing) for item in missing]
+        content, encoding = "\n".join(lines) + "\n", "utf-8"
+
+    with open(path, "w", encoding=encoding, newline="") as file:
+        file.write(content)
+
+    return sum(item.missing for item in missing)
+
+
 def collection_as_text(cards):
     """
     "3 Sol Ring (TMC) 59" per line: can be imported again keeping the edition.
     """
 
-    lines = []
-
-    for card in cards:
-        line = f"{card.quantity} {card.name}"
-        if card.set_code:
-            line += f" ({card.set_code.upper()})"
-            if card.collector_number:
-                line += f" {card.collector_number}"
-        lines.append(line)
-
-    return "\n".join(lines) + "\n"
+    return "\n".join(card_line(card, card.quantity) for card in cards) + "\n"
 
 
 def collection_as_csv(cards):
@@ -508,6 +552,7 @@ def collection_as_csv(cards):
             (card.set_code or "").upper(),
             card.collector_number or "",
             (card.rarity or "").capitalize(),
+            "Foil" if card.foil else "",
             _money(card.price("EUR")),
             _money(card.price("USD")),
             _money(card.value("EUR")),

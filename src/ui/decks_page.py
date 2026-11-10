@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QRectF, QSize, Qt
+from PySide6.QtCore import QItemSelectionModel, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -14,6 +14,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -41,7 +43,10 @@ from services.image_service import art_crop_url, load_card_image, to_pixmap
 from services.price_service import format_money
 from services.bracket_service import estimate_bracket
 from services.list_service import export_deck
+from services.list_service import export_shopping_list as save_shopping_list
+from src.ui.charts import BarChart, HorizontalBars
 from src.ui.edition_dialog import EditionDialog
+from src.ui.got_it_dialog import GotItDialog
 from src.ui.import_deck_dialog import ImportDeckDialog
 from src.ui.widgets import (
     QuantitySpinBox,
@@ -53,7 +58,17 @@ from src.ui.widgets import (
 )
 
 # Deck tree columns
-COL_QTY, COL_NAME, COL_MANA, COL_EDITION, COL_PRICE = range(5)
+COL_QTY, COL_NAME, COL_MANA, COL_EDITION, COL_PRICE, COL_OWN = range(6)
+
+# Title of the computed group with the cards you don't own enough copies of
+MISSING_GROUP_TITLE = "Not in collection"
+
+SHOPPING_TXT_FILTER = "Text list (*.txt)"
+SHOPPING_CSV_FILTER = "CSV spreadsheet with prices (*.csv)"
+
+OWNED_COLOR = "#4ADE80"
+PARTIAL_COLOR = "#FBBF24"
+MISSING_COLOR = "#F87171"
 
 # Height of the mana symbols in the deck list
 MANA_ICON_SIZE = 17
@@ -413,7 +428,7 @@ class DecksPage(QWidget):
     (add cards, cards grouped by type, preview and format checks).
     """
 
-    def __init__(self, background, get_currency, settings=None):
+    def __init__(self, background, get_currency, settings=None, on_collection_changed=None):
         super().__init__()
 
         self.background = background
@@ -426,6 +441,19 @@ class DecksPage(QWidget):
         self.entries = []         # its DeckCard lines
         self.issues = []          # its validation messages
         self.found_printings = [] # editions of the card being added
+
+        # Collection copies by card name, and the deck's cards you're missing
+        self.owned = {}
+        self.missing = []
+
+        # Called after "Got it" adds cards to the collection (main window refresh)
+        self.on_collection_changed = on_collection_changed
+
+        # Redraws the list shortly after quantity changes (see _on_quantity_changed)
+        self._redraw_timer = QTimer(self)
+        self._redraw_timer.setSingleShot(True)
+        self._redraw_timer.setInterval(600)
+        self._redraw_timer.timeout.connect(self._fill_tree)
 
         # Commander illustrations for the deck list: {art url: QImage}
         self._deck_art = {}
@@ -624,8 +652,8 @@ class DecksPage(QWidget):
         tree = QTreeWidget()
         self.tree = tree
         tree.setObjectName("deckTree")
-        tree.setColumnCount(5)
-        tree.setHeaderLabels(["Qty", "Name", "Mana", "Edition", "Price"])
+        tree.setColumnCount(6)
+        tree.setHeaderLabels(["Qty", "Name", "Mana", "Edition", "Price", "Own"])
         tree.setRootIsDecorated(False)
         tree.setIndentation(0)
         tree.setUniformRowHeights(True)
@@ -643,10 +671,12 @@ class DecksPage(QWidget):
         # The name gets all the free space; full type/edition are in the tooltip
         tree_header.setSectionResizeMode(COL_EDITION, QHeaderView.ResizeMode.Interactive)
         tree_header.setSectionResizeMode(COL_PRICE, QHeaderView.ResizeMode.Fixed)
+        tree_header.setSectionResizeMode(COL_OWN, QHeaderView.ResizeMode.Fixed)
         tree.setColumnWidth(COL_QTY, 90)
         tree.setColumnWidth(COL_MANA, 130)
         tree.setColumnWidth(COL_EDITION, 150)
         tree.setColumnWidth(COL_PRICE, 75)
+        tree.setColumnWidth(COL_OWN, 92)
 
         delete_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), tree)
         delete_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
@@ -704,20 +734,68 @@ class DecksPage(QWidget):
 
         self.sort_input.currentTextChanged.connect(self._on_sort_changed)
 
-        grouped_label = QLabel("Cards grouped by type")
-        grouped_label.setObjectName("mutedLabel")
+        # List (cards grouped by type) or Stats (curve, colors, types)
+        self.list_view_button = QPushButton("List")
+        self.stats_view_button = QPushButton("Stats")
+        self.view_group = QButtonGroup(self)
+        for button in (self.list_view_button, self.stats_view_button):
+            button.setObjectName("segmentButton")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.view_group.addButton(button)
+        self.list_view_button.setChecked(True)
+        self.list_view_button.clicked.connect(lambda: self._show_view(0))
+        self.stats_view_button.clicked.connect(lambda: self._show_view(1))
+
+        self.only_missing_input = QCheckBox("Show only cards I don't own")
+        self.only_missing_input.toggled.connect(lambda checked: self._fill_tree())
 
         sort_row = QHBoxLayout()
         sort_row.setSpacing(10)
-        sort_row.addWidget(grouped_label)
+        sort_row.addWidget(self.list_view_button)
+        sort_row.addWidget(self.stats_view_button)
+        sort_row.addSpacing(10)
+        sort_row.addWidget(self.only_missing_input)
         sort_row.addStretch()
         sort_row.addWidget(sort_label)
         sort_row.addWidget(self.sort_input)
 
+        # ---------- Cards you don't own ----------
+
+        # "Missing: 12 cards · €48.30" or "✓ You own every card of this deck"
+        self.missing_label = QLabel()
+        self.missing_label.setObjectName("missingSummary")
+
+        self.export_missing_button = QPushButton("Export shopping list…")
+        self.export_missing_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_missing_button.clicked.connect(self.export_shopping_list)
+
+        self.got_all_button = QPushButton("Got all")
+        self.got_all_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.got_all_button.setToolTip("Add every missing card to your collection (deck editions)")
+        self.got_all_button.clicked.connect(self.got_all)
+
+        missing_layout = QHBoxLayout()
+        missing_layout.setContentsMargins(14, 8, 10, 8)
+        missing_layout.setSpacing(10)
+        missing_layout.addWidget(self.missing_label)
+        missing_layout.addStretch()
+        missing_layout.addWidget(self.export_missing_button)
+        missing_layout.addWidget(self.got_all_button)
+
+        self.missing_bar = styled_panel("missingBar", missing_layout)
+
+        # ---------- Tree or stats ----------
+
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(tree)
+        self.view_stack.addWidget(self._build_stats_view())
+
         tree_column = QVBoxLayout()
         tree_column.setSpacing(8)
         tree_column.addLayout(sort_row)
-        tree_column.addWidget(tree, 1)
+        tree_column.addWidget(self.missing_bar)
+        tree_column.addWidget(self.view_stack, 1)
 
         body = QHBoxLayout()
         body.setSpacing(16)
@@ -994,9 +1072,15 @@ class DecksPage(QWidget):
         self.entries = decks.get_deck_cards(self.deck.id)
         self.issues = decks.validate_deck(self.deck.format, self.entries)
 
+        # Read the collection every time: it may have changed in other pages
+        self.owned = decks.collection_counts()
+        self.missing = decks.missing_cards(self.entries, self.owned)
+
         self._fill_tree()
         self._update_header()
+        self._update_missing_bar()
         self._fill_issues()
+        self._fill_stats()
         self._update_deck_list_item()
 
     def _main_count(self):
@@ -1095,59 +1179,164 @@ class DecksPage(QWidget):
         tree.clear()
 
         if not self.entries:
-            placeholder = QTreeWidgetItem(["This deck is empty: add cards with the search bar above."])
-            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
-            tree.addTopLevelItem(placeholder)
-            placeholder.setFirstColumnSpanned(True)
+            self._add_placeholder("This deck is empty: add cards with the search bar above.")
             return
+
+        only_missing = self.only_missing_input.isChecked()
+
+        if only_missing and not self.missing:
+            self._add_placeholder("✓ You own every card of this deck.")
+            return
+
+        sort_key = DECK_SORTS.get(self.sort_input.currentText(), DECK_SORTS[DEFAULT_DECK_SORT])
+
+        # ---------- Groups by type (hidden with "only cards I don't own") ----------
+
+        if not only_missing:
+            for title, entries in decks.group_deck_cards(self.entries):
+
+                copies = sum(entry.quantity for entry in entries)
+                group = self._add_group(f"{title}  ({copies})")
+
+                for entry in sorted(entries, key=lambda e: sort_key(e, currency)):
+                    item = self._add_card_row(group, entry, currency)
+                    self._set_own_cell(item, entry)
+
+                    if entry.id == current_id:
+                        tree.setCurrentItem(item, COL_NAME, QItemSelectionModel.SelectionFlag.NoUpdate)
+                    if entry.id in selected_ids:
+                        item.setSelected(True)
+
+        # ---------- "Not in collection": computed from the collection ----------
+
+        if self.missing:
+            copies = sum(item.missing for item in self.missing)
+            group = self._add_group(f"{MISSING_GROUP_TITLE}  ({copies})", missing=True)
+
+            for missing in sorted(self.missing, key=lambda m: sort_key(m.entry, currency)):
+                item = self._add_card_row(group, missing.entry, currency, missing=missing)
+
+                if only_missing and missing.entry.id == current_id:
+                    tree.setCurrentItem(item, COL_NAME, QItemSelectionModel.SelectionFlag.NoUpdate)
+
+    def _add_placeholder(self, text):
+
+        placeholder = QTreeWidgetItem([text])
+        placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+        self.tree.addTopLevelItem(placeholder)
+        placeholder.setFirstColumnSpanned(True)
+
+    def _add_group(self, title, missing=False):
+        """A group title row that uses the whole width (first column spanned)."""
 
         group_font = QFont()
         group_font.setBold(True)
 
-        for title, entries in decks.group_deck_cards(self.entries):
+        group = QTreeWidgetItem([title])
+        group.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        group.setFont(0, group_font)
 
-            copies = sum(entry.quantity for entry in entries)
-            # The group title uses the whole row (first column spanned)
-            group = QTreeWidgetItem([f"{title}  ({copies})"])
-            group.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            group.setFont(0, group_font)
-            tree.addTopLevelItem(group)
-            group.setFirstColumnSpanned(True)
+        if missing:
+            group.setForeground(0, QColor(MISSING_COLOR))
 
-            sort_key = DECK_SORTS.get(self.sort_input.currentText(), DECK_SORTS[DEFAULT_DECK_SORT])
+        self.tree.addTopLevelItem(group)
+        group.setFirstColumnSpanned(True)
+        group.setExpanded(True)
+        return group
 
-            for entry in sorted(entries, key=lambda e: sort_key(e, currency)):
-                card = entry.card
+    def _add_card_row(self, group, entry, currency, missing=None):
+        """
+        One card row. missing (a MissingCard) makes it a "Not in collection"
+        row: missing copies instead of the quantity box, their cost, and a
+        "Got it…" button.
+        """
 
-                item = QTreeWidgetItem([
-                    "",
-                    card.name,
-                    format_mana_cost(card.mana_cost, empty=""),
-                    card.printing_label,
-                    format_money(card.price(currency), currency),
-                ])
-                item.setData(COL_NAME, Qt.ItemDataRole.UserRole, entry.id)
-                item.setToolTip(COL_NAME, f"{card.name}\n{card.type_line or ''}")
-                item.setToolTip(COL_EDITION, card.printing_label)
-                item.setTextAlignment(COL_PRICE, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                group.addChild(item)
+        card = entry.card
+        tree = self.tree
 
-                tree.setItemWidget(item, COL_QTY, self._quantity_cell(entry))
+        price = missing.cost(currency) if missing else card.price(currency)
 
-                # Mana symbols instead of "2 W U" when they are downloaded
-                symbols = mana_pixmap(card.mana_cost, height=MANA_ICON_SIZE)
-                if symbols is not None:
-                    item.setText(COL_MANA, "")
-                    item.setToolTip(COL_MANA, format_mana_cost(card.mana_cost, empty=""))
-                    tree.setItemWidget(item, COL_MANA, self._mana_cell(symbols))
+        item = QTreeWidgetItem([
+            "",
+            card.name,
+            format_mana_cost(card.mana_cost, empty=""),
+            card.printing_label,
+            format_money(price, currency),
+        ])
+        item.setData(COL_NAME, Qt.ItemDataRole.UserRole, entry.id)
+        item.setToolTip(COL_NAME, f"{card.name}\n{card.type_line or ''}")
+        item.setToolTip(COL_EDITION, card.printing_label)
+        item.setTextAlignment(COL_PRICE, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        group.addChild(item)
 
-                if entry.id == current_id:
-                    tree.setCurrentItem(item, COL_NAME, QItemSelectionModel.SelectionFlag.NoUpdate)
+        if missing:
+            item.setToolTip(
+                COL_PRICE,
+                f"{missing.missing} × {format_money(card.price(currency), currency)}",
+            )
+            tree.setItemWidget(item, COL_QTY, self._missing_count_cell(missing))
+            tree.setItemWidget(item, COL_OWN, self._got_it_cell(missing))
+        else:
+            tree.setItemWidget(item, COL_QTY, self._quantity_cell(entry))
 
-                if entry.id in selected_ids:
-                    item.setSelected(True)
+        # Mana symbols instead of "2 W U" when they are downloaded
+        symbols = mana_pixmap(card.mana_cost, height=MANA_ICON_SIZE)
+        if symbols is not None:
+            item.setText(COL_MANA, "")
+            item.setToolTip(COL_MANA, format_mana_cost(card.mana_cost, empty=""))
+            tree.setItemWidget(item, COL_MANA, self._mana_cell(symbols))
 
-            group.setExpanded(True)
+        return item
+
+    def _set_own_cell(self, item, entry):
+        """
+        ✓ (you have every copy the deck needs), "1/3" (some) or ✗ (none).
+        Counted by name: any edition of the collection counts.
+        """
+
+        if entry.section == "maybeboard":
+            return
+
+        key = entry.name.lower()
+        needed = decks.needed_counts(self.entries).get(key, 0)
+        owned = self.owned.get(key, 0)
+
+        if owned >= needed:
+            text, color = "✓", OWNED_COLOR
+        elif owned:
+            text, color = f"{owned}/{needed}", PARTIAL_COLOR
+        else:
+            text, color = "✗", MISSING_COLOR
+
+        item.setText(COL_OWN, text)
+        item.setForeground(COL_OWN, QColor(color))
+        item.setTextAlignment(COL_OWN, Qt.AlignmentFlag.AlignCenter)
+        item.setToolTip(COL_OWN, f"In your collection: {owned} of {needed} (any edition)")
+
+    def _missing_count_cell(self, missing):
+
+        label = QLabel(f"× {missing.missing}")
+        label.setObjectName("missingCount")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setToolTip(f"Needed {missing.needed}, you have {missing.owned}")
+        label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        return label
+
+    def _got_it_cell(self, missing):
+
+        button = QPushButton("Got it…")
+        button.setObjectName("gotItButton")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip(f"I got copies of {missing.name}: add them to my collection")
+        button.clicked.connect(lambda checked=False, m=missing: self.got_it(m))
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.addWidget(button)
+
+        cell = QWidget()
+        cell.setLayout(layout)
+        return cell
 
     def _mana_cell(self, pixmap):
 
@@ -1186,10 +1375,36 @@ class DecksPage(QWidget):
                 entry.card.quantity = quantity
 
         self.issues = decks.validate_deck(self.deck.format, self.entries)
+
+        old_missing = [(m.name, m.missing) for m in self.missing]
+        self.missing = decks.missing_cards(self.entries, self.owned)
+
         self._update_header()
+        self._update_missing_bar()
         self._fill_issues()
+        self._fill_stats()
         self._update_group_titles()
+        self._update_own_cells()
         self._update_deck_list_item()
+
+        # The "Not in collection" group changed: redraw the list a moment
+        # after the last click, so the quantity box doesn't lose focus
+        if [(m.name, m.missing) for m in self.missing] != old_missing:
+            self._redraw_timer.start()
+
+    def _update_own_cells(self):
+
+        entries_by_id = {entry.id: entry for entry in self.entries}
+
+        for index in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(index)
+            if group.text(0).startswith(MISSING_GROUP_TITLE):
+                continue
+            for child_index in range(group.childCount()):
+                item = group.child(child_index)
+                entry = entries_by_id.get(item.data(COL_NAME, Qt.ItemDataRole.UserRole))
+                if entry is not None:
+                    self._set_own_cell(item, entry)
 
     def _update_group_titles(self):
 
@@ -1197,6 +1412,11 @@ class DecksPage(QWidget):
 
         for index in range(self.tree.topLevelItemCount()):
             group = self.tree.topLevelItem(index)
+
+            # Its count is the missing copies, recalculated when redrawn
+            if group.text(0).startswith(MISSING_GROUP_TITLE):
+                continue
+
             copies = 0
             for child_index in range(group.childCount()):
                 line_id = group.child(child_index).data(COL_NAME, Qt.ItemDataRole.UserRole)
@@ -1206,6 +1426,214 @@ class DecksPage(QWidget):
             title = group.text(0).rsplit("  (", 1)[0]
             if group.childCount():
                 group.setText(0, f"{title}  ({copies})")
+
+    # ==================================
+    # CARDS YOU DON'T OWN
+    # ==================================
+
+    def _update_missing_bar(self):
+        """
+        "Missing: 12 cards · €48.30" (or ✓ when you own the whole deck).
+        """
+
+        if not self.entries:
+            self.missing_bar.hide()
+            return
+
+        self.missing_bar.show()
+        currency = self.get_currency()
+
+        copies = sum(item.missing for item in self.missing)
+        has_missing = bool(self.missing)
+
+        if has_missing:
+            cost = sum(item.cost(currency) or 0 for item in self.missing)
+            unpriced = sum(1 for item in self.missing if item.cost(currency) is None)
+            text = f"Missing: {plural(copies, 'card')} · {format_money(cost, currency)}"
+            if unpriced:
+                text += f"  ({unpriced} without price)"
+            set_status(self.missing_label, text, "error")
+        else:
+            set_status(self.missing_label, "✓ You own every card of this deck", "success")
+
+        self.export_missing_button.setVisible(has_missing)
+        self.got_all_button.setVisible(has_missing)
+
+    def got_it(self, missing):
+        """
+        Register copies you got of a missing card: they go to the collection.
+        """
+
+        dialog = GotItDialog(missing, self.background, self, currency=self.get_currency())
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        quantity = dialog.quantity
+        decks.add_to_collection(dialog.selected_card, quantity, foil=dialog.foil)
+
+        still_missing = max(0, missing.missing - quantity)
+        finish = " foil" if dialog.foil else ""
+        message = f"Added {quantity} ×{finish} {missing.name} to your collection."
+        message += f" {still_missing} still missing." if still_missing else " Nothing missing anymore."
+
+        self._collection_changed(message)
+
+    def got_all(self):
+        """Add every missing card to the collection (deck editions)."""
+
+        if not self.missing:
+            return
+
+        copies = sum(item.missing for item in self.missing)
+
+        answer = QMessageBox.question(
+            self,
+            "Got all the missing cards",
+            f"Add {plural(copies, 'card')} ({plural(len(self.missing), 'line')}) "
+            "to your collection?\n\nThe deck's editions will be used.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        for item in self.missing:
+            decks.add_to_collection(item.entry.card, item.missing)
+
+        self._collection_changed(f"Added {plural(copies, 'card')} to your collection. The deck is complete.")
+
+    def _collection_changed(self, message):
+
+        self.refresh_deck()
+        set_status(self.status_label, message, "success")
+
+        if self.on_collection_changed:
+            self.on_collection_changed()
+
+    def export_shopping_list(self):
+
+        if not self.missing:
+            return
+
+        safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in self.deck.name).strip()
+        suggested = str(Path.home() / "Documents" / f"{safe_name or 'deck'} - shopping list.txt")
+
+        path, chosen = QFileDialog.getSaveFileName(
+            self,
+            "Export shopping list",
+            suggested,
+            f"{SHOPPING_TXT_FILTER};;{SHOPPING_CSV_FILTER}",
+        )
+
+        if not path:
+            return
+
+        extension = ".csv" if chosen == SHOPPING_CSV_FILTER else ".txt"
+        path = Path(path)
+        if path.suffix.lower() != extension:
+            path = path.with_suffix(extension)
+
+        try:
+            copies = save_shopping_list(path, self.missing, self.get_currency())
+        except OSError as error:
+            set_status(self.status_label, f"Could not save the file: {error}", "error")
+            return
+
+        set_status(self.status_label, f"Shopping list ({plural(copies, 'card')}) saved to {path}.", "success")
+
+    # ==================================
+    # STATS
+    # ==================================
+
+    def _build_stats_view(self):
+
+        def caption(text):
+            label = QLabel(text)
+            label.setObjectName("fieldLabel")
+            return label
+
+        # "Average mana value 2.80 · 29 lands · 71 other cards · Value €510"
+        self.stats_summary = QLabel()
+        self.stats_summary.setObjectName("statsSummary")
+        self.stats_summary.setWordWrap(True)
+
+        self.curve_chart = BarChart()
+        self.colors_chart = HorizontalBars()
+        self.types_chart = HorizontalBars()
+
+        bottom = QHBoxLayout()
+        bottom.setSpacing(28)
+
+        colors_box = QVBoxLayout()
+        colors_box.setSpacing(8)
+        colors_box.addWidget(caption("COLORS (CARDS, LANDS EXCLUDED)"))
+        colors_box.addWidget(self.colors_chart)
+        colors_box.addStretch()
+
+        types_box = QVBoxLayout()
+        types_box.setSpacing(8)
+        types_box.addWidget(caption("CARD TYPES"))
+        types_box.addWidget(self.types_chart)
+        types_box.addStretch()
+
+        bottom.addLayout(colors_box, 1)
+        bottom.addLayout(types_box, 1)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+        layout.addWidget(self.stats_summary)
+        layout.addSpacing(6)
+        layout.addWidget(caption("MANA CURVE (LANDS EXCLUDED)"))
+        layout.addWidget(self.curve_chart, 1)
+        layout.addSpacing(10)
+        layout.addLayout(bottom)
+
+        return styled_panel("statsPanel", layout)
+
+    def _fill_stats(self):
+
+        stats = decks.deck_stats(self.entries)
+        currency = self.get_currency()
+
+        labels = [str(value) for value in range(decks.CURVE_MAX)] + [f"{decks.CURVE_MAX}+"]
+        self.curve_chart.set_data(labels, stats.curve)
+
+        color_names = [("W", "White"), ("U", "Blue"), ("B", "Black"), ("R", "Red"), ("G", "Green")]
+        color_items = [
+            (name, stats.colors.get(letter, 0), MANA_COLORS[letter])
+            for letter, name in color_names
+            if stats.colors.get(letter)
+        ]
+        if stats.colors.get("C"):
+            color_items.append(("Colorless", stats.colors["C"], COLORLESS_COLOR))
+        self.colors_chart.set_data(color_items)
+
+        self.types_chart.set_data([(group, count, None) for group, count in stats.types])
+
+        playing = [e for e in self.entries if e.section in ("commander", "main")]
+        value = sum(e.card.value(currency) or 0 for e in playing)
+        missing_cost = sum(item.cost(currency) or 0 for item in self.missing)
+
+        parts = [
+            f"Average mana value <b>{stats.average_mana_value:.2f}</b>",
+            f"<b>{stats.lands}</b> lands",
+            f"<b>{stats.nonlands}</b> other cards",
+            f"Value <b>{format_money(value, currency)}</b>",
+        ]
+        if self.missing:
+            parts.append(f"Missing <b>{format_money(missing_cost, currency)}</b>")
+
+        self.stats_summary.setText("  ·  ".join(parts))
+
+    def _show_view(self, index):
+        """0 = list of cards, 1 = stats."""
+
+        self.view_stack.setCurrentIndex(index)
+        self.sort_input.setEnabled(index == 0)
+        self.only_missing_input.setEnabled(index == 0)
 
     def _on_format_changed(self):
 
@@ -1228,7 +1656,8 @@ class DecksPage(QWidget):
 
         for item in self.tree.selectedItems():
             line_id = item.data(COL_NAME, Qt.ItemDataRole.UserRole)
-            if line_id in entries_by_id:
+            # A card can appear twice (its group and "Not in collection")
+            if line_id in entries_by_id and entries_by_id[line_id] not in selected:
                 selected.append(entries_by_id[line_id])
 
         return selected
@@ -1314,6 +1743,14 @@ class DecksPage(QWidget):
 
         selected = self.selected_entries()
         menu = QMenu(self)
+
+        # Cards you don't own enough copies of: register the ones you got
+        if len(selected) == 1:
+            missing = next((m for m in self.missing if m.entry.id == selected[0].id), None)
+            if missing is not None:
+                got_action = menu.addAction(f"Got it… ({missing.missing} missing)")
+                got_action.triggered.connect(lambda checked=False, m=missing: self.got_it(m))
+                menu.addSeparator()
 
         move_menu = menu.addMenu("Move to")
         for section in decks.SECTIONS:

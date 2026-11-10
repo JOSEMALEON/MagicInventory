@@ -359,11 +359,13 @@ class ImportPage(QWidget):
             quantity = QTableWidgetItem(f"{entry.quantity}")
             quantity.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
+            # The price of the finish that will be added (foil or not)
+            card.foil = entry.foil
             price = QTableWidgetItem(format_money(card.price(currency), currency))
             price.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
             self.results_table.setItem(row, 0, quantity)
-            self.results_table.setItem(row, 1, QTableWidgetItem(card.name))
+            self.results_table.setItem(row, 1, QTableWidgetItem(f"{card.name}  ✦" if entry.foil else card.name))
             self.results_table.setItem(row, 2, QTableWidgetItem(card.printing_label))
             self.results_table.setItem(row, 3, price)
 

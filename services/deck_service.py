@@ -8,6 +8,8 @@ from collections import Counter
 from dataclasses import dataclass
 
 from database import deck_manager
+from database.database_manager import add_card, get_all_cards
+from models.card import Card
 from models.deck import SECTION_LABELS, SECTIONS
 from services.card_service import is_basic_land
 
@@ -357,6 +359,161 @@ def change_deck_card_printing(deck_card_id, new_card):
     return deck_manager.change_deck_card_printing(deck_card_id, new_card)
 
 
+# ==================================
+# COLLECTION: OWNED / MISSING CARDS
+# ==================================
+
+# Sections whose cards you need to own to play the deck (not the maybeboard)
+NEEDED_SECTIONS = ("commander", "main", "sideboard")
+
+
+@dataclass
+class MissingCard:
+    """
+    A card of the deck you don't have enough copies of (counted by name:
+    any edition of the collection counts). entry is the deck line used for
+    its edition, price and image.
+    """
+
+    name: str
+    entry: object
+    needed: int
+    owned: int
+
+    @property
+    def missing(self):
+        return max(0, self.needed - self.owned)
+
+    def cost(self, currency):
+        """Price of the missing copies, or None if there's no price."""
+        price = self.entry.card.price(currency)
+        return None if price is None else price * self.missing
+
+
+def collection_counts():
+    """{card name (lowercase): copies in the collection, all editions}."""
+
+    counts = Counter()
+    for card in get_all_cards():
+        counts[(card.name or "").lower()] += card.quantity or 0
+    return counts
+
+
+def needed_counts(deck_cards):
+    """{card name (lowercase): copies the deck needs} (maybeboard excluded)."""
+
+    counts = Counter()
+    for entry in deck_cards:
+        if entry.section in NEEDED_SECTIONS:
+            counts[entry.name.lower()] += entry.quantity
+    return counts
+
+
+def missing_cards(deck_cards, owned=None):
+    """
+    The deck's cards you don't have enough copies of, sorted by name.
+    owned: result of collection_counts() (read from the database if None).
+    """
+
+    owned = collection_counts() if owned is None else owned
+    needed = needed_counts(deck_cards)
+
+    first_entry = {}
+    for entry in deck_cards:
+        if entry.section in NEEDED_SECTIONS:
+            first_entry.setdefault(entry.name.lower(), entry)
+
+    result = [
+        MissingCard(entry.name, entry, needed[key], owned.get(key, 0))
+        for key, entry in first_entry.items()
+        if owned.get(key, 0) < needed[key]
+    ]
+
+    return sorted(result, key=lambda item: item.name.lower())
+
+
+def add_to_collection(card, quantity, foil=False):
+    """
+    Register copies you got of a deck card (a Card from Scryfall or a
+    deck line's card): they are added to the collection, foil or not.
+    """
+
+    copy = Card(
+        name=card.name, set_name=card.set_name, type_line=card.type_line,
+        mana_cost=card.mana_cost, rarity=card.rarity, image_url=card.image_url,
+        quantity=quantity, scryfall_id=card.scryfall_id, set_code=card.set_code,
+        collector_number=card.collector_number,
+        price_eur=card.price_eur, price_eur_foil=card.price_eur_foil,
+        price_usd=card.price_usd, price_usd_foil=card.price_usd_foil,
+        foil=foil,
+    )
+    add_card(copy)
+
+
+# ==================================
+# STATS
+# ==================================
+
+# Mana curve columns: 0, 1, ... 6, "7+"
+CURVE_MAX = 7
+
+
+@dataclass
+class DeckStats:
+    curve: list            # copies per mana value 0..CURVE_MAX (last = 7+), lands excluded
+    colors: dict           # {"W": copies, ...} cards of each color ("C" = colorless)
+    types: list            # [(group, copies)] in display order
+    average_mana_value: float
+    lands: int
+    nonlands: int
+
+
+def deck_stats(deck_cards):
+    """
+    Mana curve, colors and card types of the commander + main deck.
+    """
+
+    playing = [entry for entry in deck_cards if entry.section in ("commander", "main")]
+
+    curve = [0] * (CURVE_MAX + 1)
+    colors = Counter()
+    types = Counter()
+    total_mana_value = 0
+    lands = nonlands = 0
+
+    for entry in playing:
+        card = entry.card
+        group = type_group(card)
+        types[group] += entry.quantity
+
+        if group == "Lands":
+            lands += entry.quantity
+            continue
+
+        nonlands += entry.quantity
+        mana_value = int(card.cmc or 0)
+        curve[min(mana_value, CURVE_MAX)] += entry.quantity
+        total_mana_value += (card.cmc or 0) * entry.quantity
+
+        card_colors = card.colors or []
+        if card_colors:
+            for color in card_colors:
+                colors[color] += entry.quantity
+        else:
+            colors["C"] += entry.quantity
+
+    ordered_types = [(group, types[group]) for group in TYPE_GROUP_ORDER if types[group]]
+
+    return DeckStats(
+        curve=curve,
+        colors=dict(colors),
+        types=ordered_types,
+        average_mana_value=(total_mana_value / nonlands) if nonlands else 0.0,
+        lands=lands,
+        nonlands=nonlands,
+    )
+
+
 def create_deck_from_list(name, deck_format, found):
     """
     Create a deck from an imported list. found is [(ListEntry, Card)] as
@@ -380,4 +537,6 @@ __all__ = [
     "get_decks", "get_deck", "create_deck", "rename_deck", "set_deck_format",
     "delete_deck", "get_deck_cards", "add_card_to_deck", "set_deck_card_quantity",
     "remove_deck_cards", "move_deck_card", "change_deck_card_printing", "create_deck_from_list",
+    "MissingCard", "collection_counts", "needed_counts", "missing_cards", "add_to_collection",
+    "DeckStats", "deck_stats", "CURVE_MAX",
 ]

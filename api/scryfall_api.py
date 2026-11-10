@@ -118,6 +118,7 @@ def _card_from_json(data):
         color_identity=data.get("color_identity") or [],
         legalities=data.get("legalities") or {},
         oracle_text=_extract_oracle_text(data),
+        finishes=data.get("finishes") or [],
         price_eur=_parse_price(prices.get("eur")),
         price_eur_foil=_parse_price(prices.get("eur_foil")),
         price_usd=_parse_price(prices.get("usd")),

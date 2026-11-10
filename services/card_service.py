@@ -5,6 +5,7 @@ from database.database_manager import (
     delete_cards,
     update_quantity,
     change_printing,
+    set_foil,
 )
 
 
@@ -64,7 +65,16 @@ def set_quantity(card_id, quantity):
 
 def change_card_printing(card_id, new_card):
     """
-    Move a collection row to another edition, merging quantities if that
-    edition is already in the collection. Return the resulting row id.
+    Move a collection row to another edition (keeping foil / non-foil),
+    merging quantities if that edition is already in the collection.
+    Return the resulting row id.
     """
     return change_printing(card_id, new_card)
+
+
+def set_card_foil(card_id, foil):
+    """
+    Mark a collection row as foil or non-foil (merging with the other row of
+    the same edition and finish if it exists). Return the resulting row id.
+    """
+    return set_foil(card_id, foil)

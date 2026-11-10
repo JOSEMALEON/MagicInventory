@@ -26,6 +26,8 @@ src/ui/edition_dialog.py     -> EditionDialog: elegir otra edición para una car
 src/ui/import_page.py        -> ImportPage: pegar/cargar una lista, comprobarla en Scryfall y añadir las cartas
 src/ui/decks_page.py         -> DecksPage (lista de mazos + mazo abierto), DeckListCard y NewDeckDialog
 src/ui/import_deck_dialog.py -> ImportDeckDialog: crear un mazo desde una lista con secciones
+src/ui/got_it_dialog.py      -> GotItDialog: registrar copias compradas de una carta que falta
+src/ui/charts.py             -> BarChart (curva de maná) y HorizontalBars (colores, tipos) con QPainter
 services/deck_service.py     -> FORMATS, agrupación por tipo, validate_deck() -> [DeckIssue], fachada de mazos
 database/deck_manager.py     -> tablas decks/deck_cards (create_deck_tables) y CRUD de mazos y cartas
 models/deck.py               -> Deck, DeckCard (id, section, card) y SECTIONS/SECTION_LABELS
@@ -66,19 +68,27 @@ Flujo: buscar -> `search_card()` -> Scryfall -> `Card` -> imagen + datos en el p
 
 Tabla `cards`: `id, name, set_name, type_line, mana_cost, rarity, image_url, quantity,
 scryfall_id, set_code, collector_number, price_eur, price_eur_foil, price_usd, price_usd_foil,
-prices_updated_at`.
+prices_updated_at, foil`.
 
 Tabla `price_history`: `scryfall_id, date, price_eur, price_eur_foil, price_usd, price_usd_foil`
 (clave `scryfall_id + date`: una fila por edición y día; el mismo día se sobrescribe).
 
-- Precios de **una copia no foil**; si la edición solo existe en foil se usa el foil (`Card.price()`).
-  Todavía no se distingue si las copias del usuario son foil.
+- **Foil** (10 nov 2026, pedido por el autor): `cards.foil` (0/1, migración: las filas antiguas
+  quedan no foil). `Card.price()` usa el precio foil en copias foil y el normal en las demás (si falta
+  uno, el otro). `get_price_changes()` devuelve `{(scryfall_id, is_foil): (fecha, precio)}`; usar
+  `previous_price(changes, card)`.
+- `Card.finishes` (de Scryfall, solo en memoria): `can_be_foil` / `only_foil` controlan la casilla
+  Foil (desactivada si no hay foil; marcada y bloqueada si solo existe en foil).
 - Cualquier `Card` que llega de Scryfall y se guarda (`add_card`, `change_printing`) guarda también
   sus precios (`_store_prices`).
 
-- **Una fila = una edición concreta (printing)**, identificada por `scryfall_id`
-  (índice único parcial `idx_cards_scryfall_id`, solo para filas con id).
-- Misma edición -> se suman cantidades. Otra edición de la misma carta -> fila nueva.
+- **Una fila = una edición concreta (printing) + acabado (foil o no)**, identificada por
+  `scryfall_id + foil` (índice único parcial `idx_cards_printing_finish`, solo filas con id; sustituye
+  al antiguo `idx_cards_scryfall_id`, que se borra al arrancar).
+- Misma edición y acabado -> se suman cantidades. Otra edición u otro acabado -> fila nueva.
+  `set_foil()` (casilla Foil de la tabla) y `change_printing()` conservan/fusionan por acabado.
+- Listas: `*F*`/`*E*` = foil al importar; al exportar se escribe `*F*`; CSV con columna "Foil".
+- Los mazos no distinguen foil: "tener" una carta se cuenta por nombre (foil o no).
 - Filas antiguas (anteriores a la migración) tienen `scryfall_id = NULL`. Si se vuelve a añadir
   la misma carta y edición (`name` + `set_name`), `_find_existing_card()` "adopta" esa fila y le
   rellena el id en vez de duplicarla.
@@ -367,11 +377,33 @@ Decisiones del autor:
   o un comandante. `_clear_preview()` incrementa `_preview_id` para descartar imágenes que aún se
   estén descargando de otro mazo (antes una imagen tardía de otro mazo podía colarse).
 
+### Fase 2 hecha (10 nov 2026 — commit PENDING)
+- **Precios de mazos al día**: `refresh_prices()` pide en el mismo lote las ediciones de la
+  colección y de los mazos (`deck_manager.get_deck_scryfall_ids/update_deck_prices`);
+  `deck_cards.prices_updated_at` (migración). Al arrancar se actualiza si la colección **o** los
+  mazos tienen precios de > 20 h (`deck_prices_need_update`).
+- **Tengo/falta** (por nombre, cualquier edición; maybeboard no cuenta): `deck_service.collection_counts`,
+  `needed_counts`, `missing_cards() -> [MissingCard(name, entry, needed, owned)]`.
+  - Columna **Own**: ✓ / "1/3" / ✗. Barra "Missing: N cards · €X" (o "✓ You own every card").
+  - Grupo calculado **"Not in collection"** al final del árbol (cada fila: "× faltan", coste de lo que
+    falta y botón **"Got it…"**). Interruptor **"Show only cards I don't own"** deja solo ese grupo.
+  - `GotItDialog` (src/ui/got_it_dialog.py): copias (por defecto las que faltan) + edición (por
+    defecto la del mazo, con precios) -> `deck_service.add_to_collection()`. También en el menú
+    contextual. **"Got all"** con confirmación (ediciones del mazo). Tras añadir se llama a
+    `on_collection_changed` (MainWindow.show_collection).
+  - **"Export shopping list…"**: .txt (`2 Sol Ring (CMM) 410`) o .csv con precio y total
+    (`list_service.export_shopping_list`).
+  - Cambiar una cantidad actualiza al momento cabecera/barra/Own/stats; el grupo "Not in collection"
+    se redibuja 600 ms después del último cambio (`_redraw_timer`) para no quitar el foco del contador.
+- **Stats** (botones List / Stats): resumen (coste medio sin tierras, tierras, otras cartas, valor,
+  lo que falta), curva de maná 0..7+ (`BarChart`), colores y tipos (`HorizontalBars`) en
+  src/ui/charts.py, dibujados con QPainter. `deck_service.deck_stats()` (commander + main).
+
 ## Pendiente
 
-- **Deck builder:** fases 2 y 3 (y que "Update prices" actualice también las cartas de los mazos).
+- **Deck builder, fase 3:** "Add to deck…" desde la colección y vista visual con miniaturas.
 - Ideas de mejora: deshacer el último borrado; mostrar colores de rareza también en
-  filas seleccionadas; guardar el filtro entre sesiones; marcar copias foil (precio foil).
+  filas seleccionadas; guardar el filtro entre sesiones.
 
 ## Roadmap del README (a largo plazo)
 Filtros avanzados de la colección (ya hay filtro de texto; faltan filtros por campo), contador de vidas

@@ -18,13 +18,15 @@ PRINTING_COLUMNS = {
     "price_usd_foil": "REAL",
     # ISO date-time of the last price update
     "prices_updated_at": "TEXT",
+    # 1 = these copies are foil. Old rows become non-foil (0).
+    "foil": "INTEGER NOT NULL DEFAULT 0",
 }
 
 # Columns read into Card objects, in this order
 CARD_COLUMNS = (
     "name, set_name, type_line, mana_cost, rarity, image_url, quantity, "
     "scryfall_id, set_code, collector_number, id, "
-    "price_eur, price_eur_foil, price_usd, price_usd_foil, prices_updated_at"
+    "price_eur, price_eur_foil, price_usd, price_usd_foil, prices_updated_at, foil"
 )
 
 
@@ -47,6 +49,7 @@ def _card_from_row(row):
         price_usd=row[13],
         price_usd_foil=row[14],
         prices_updated_at=row[15],
+        foil=bool(row[16]),
     )
 
 
@@ -99,10 +102,13 @@ def create_database():
             if column not in existing_columns:
                 conn.execute(f"ALTER TABLE cards ADD COLUMN {column} {column_type}")
 
-        # One row per printing. Old rows without scryfall_id are allowed.
+        # One row per printing AND finish (normal / foil). Old rows without
+        # scryfall_id are allowed. The first index only allowed one row per
+        # printing, so it is replaced.
+        conn.execute("DROP INDEX IF EXISTS idx_cards_scryfall_id")
         conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_scryfall_id
-        ON cards (scryfall_id)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_printing_finish
+        ON cards (scryfall_id, foil)
         WHERE scryfall_id IS NOT NULL
         """)
 
@@ -126,17 +132,20 @@ def create_database():
 
 def _find_existing_card(conn, card):
     """
-    Return (id, quantity) of the row that represents this exact printing, or None.
+    Return (id, quantity) of the row that represents this exact printing and
+    finish (foil or not), or None.
 
     Rows saved before scryfall_id existed only have name + set_name. If one of
     them matches, it is upgraded with the printing data so it isn't duplicated.
     """
 
+    foil = int(bool(card.foil))
+
     if card.scryfall_id:
 
         row = conn.execute(
-            "SELECT id, quantity FROM cards WHERE scryfall_id = ?",
-            (card.scryfall_id,),
+            "SELECT id, quantity FROM cards WHERE scryfall_id = ? AND foil = ?",
+            (card.scryfall_id, foil),
         ).fetchone()
 
         if row:
@@ -147,7 +156,8 @@ def _find_existing_card(conn, card):
     WHERE scryfall_id IS NULL
       AND LOWER(name) = LOWER(?)
       AND set_name = ?
-    """, (card.name, card.set_name)).fetchone()
+      AND foil = ?
+    """, (card.name, card.set_name, foil)).fetchone()
 
     if legacy_row and card.scryfall_id:
 
@@ -190,9 +200,9 @@ def add_card(card):
             conn.execute("""
             INSERT INTO cards (
                 name, set_name, type_line, mana_cost, rarity, image_url, quantity,
-                scryfall_id, set_code, collector_number
+                scryfall_id, set_code, collector_number, foil
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 card.name,
                 card.set_name,
@@ -204,6 +214,7 @@ def add_card(card):
                 card.scryfall_id,
                 card.set_code,
                 card.collector_number,
+                int(bool(card.foil)),
             ))
 
         # The card comes straight from Scryfall, so its prices are current
@@ -299,6 +310,51 @@ def get_previous_prices():
     return {row[0]: row[1:] for row in rows}
 
 
+def set_foil(card_id, foil):
+    """
+    Mark the copies of a row as foil or not. If the collection already has a
+    row for the same printing with that finish, the copies are merged into
+    it. Return the id of the row that holds the copies afterwards.
+    """
+
+    foil = int(bool(foil))
+
+    with _connect() as conn, conn:
+
+        row = conn.execute(
+            "SELECT scryfall_id, quantity, name, set_name FROM cards WHERE id = ?", (card_id,)
+        ).fetchone()
+
+        if row is None:
+            raise ValueError(f"Card {card_id} is not in the collection")
+
+        scryfall_id, quantity, name, set_name = row
+
+        if scryfall_id:
+            other = conn.execute(
+                "SELECT id FROM cards WHERE scryfall_id = ? AND foil = ? AND id != ?",
+                (scryfall_id, foil, card_id),
+            ).fetchone()
+        else:
+            # Old rows without printing data: same name and set
+            other = conn.execute("""
+            SELECT id FROM cards
+            WHERE scryfall_id IS NULL AND LOWER(name) = LOWER(?) AND set_name = ?
+              AND foil = ? AND id != ?
+            """, (name, set_name, foil, card_id)).fetchone()
+
+        if other:
+            conn.execute(
+                "UPDATE cards SET quantity = quantity + ? WHERE id = ?",
+                (quantity or 0, other[0]),
+            )
+            conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+            return other[0]
+
+        conn.execute("UPDATE cards SET foil = ? WHERE id = ?", (foil, card_id))
+        return card_id
+
+
 def delete_cards(card_ids):
     """
     Remove these rows (printings) from the collection.
@@ -330,29 +386,31 @@ def update_quantity(card_id, quantity):
 
 def change_printing(card_id, new_card):
     """
-    Move the row card_id to another printing (edition) of the same card.
+    Move the row card_id to another printing (edition) of the same card,
+    keeping its finish (foil or not).
 
-    If the collection already has a row for that printing, the quantities
-    are merged into it and card_id is deleted. Return the id of the row
-    that holds the cards afterwards.
+    If the collection already has a row for that printing and finish, the
+    quantities are merged into it and card_id is deleted. Return the id of
+    the row that holds the cards afterwards.
     """
 
     with _connect() as conn, conn:
 
         row = conn.execute(
-            "SELECT quantity FROM cards WHERE id = ?", (card_id,)
+            "SELECT quantity, foil FROM cards WHERE id = ?", (card_id,)
         ).fetchone()
 
         if row is None:
             raise ValueError(f"Card {card_id} is not in the collection")
 
         quantity = row[0] or 0
+        foil = row[1] or 0
 
         target = None
         if new_card.scryfall_id:
             target = conn.execute(
-                "SELECT id, quantity FROM cards WHERE scryfall_id = ? AND id != ?",
-                (new_card.scryfall_id, card_id),
+                "SELECT id, quantity FROM cards WHERE scryfall_id = ? AND foil = ? AND id != ?",
+                (new_card.scryfall_id, foil, card_id),
             ).fetchone()
 
         if target:

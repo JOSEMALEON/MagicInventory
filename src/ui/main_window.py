@@ -17,12 +17,13 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QDialog,
     QFileDialog,
+    QCheckBox,
 )
 
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 
 from services.card_service import (
@@ -34,6 +35,7 @@ from services.card_service import (
     remove_cards,
     set_quantity,
     change_card_printing,
+    set_card_foil,
     ScryfallError,
 )
 from services.image_service import load_card_image, to_pixmap
@@ -49,6 +51,8 @@ from services.price_service import (
     last_price_update,
     get_price_changes,
     format_money,
+    deck_prices_need_update,
+    previous_price,
 )
 from database.database_manager import create_database
 from src.config import RARITY_COLORS
@@ -75,7 +79,7 @@ THUMB_WIDTH = 90
 THUMB_HEIGHT = 126
 
 # Collection table columns
-COL_IMAGE, COL_NAME, COL_EDITION, COL_RARITY, COL_PRICE, COL_QUANTITY, COL_VALUE = range(7)
+COL_IMAGE, COL_NAME, COL_EDITION, COL_RARITY, COL_FOIL, COL_PRICE, COL_QUANTITY, COL_VALUE = range(8)
 
 CURRENCIES = ["EUR", "USD"]
 
@@ -214,7 +218,11 @@ class MainWindow(QWidget):
         self.pages.addWidget(self.collection_page)
 
         self.decks_page = DecksPage(
-            self.background, get_currency=lambda: self.currency, settings=self.settings
+            self.background,
+            get_currency=lambda: self.currency,
+            settings=self.settings,
+            # "Got it" adds cards to the collection: redraw the collection page
+            on_collection_changed=self.show_collection,
         )
         self.pages.addWidget(self.decks_page)
 
@@ -231,7 +239,8 @@ class MainWindow(QWidget):
         self.show_collection()
 
         # Scryfall updates prices daily: refresh them if they are old
-        if self.collection_cards and prices_need_update(self.collection_cards):
+        collection_stale = self.collection_cards and prices_need_update(self.collection_cards)
+        if collection_stale or deck_prices_need_update():
             self.update_prices()
 
         # Mana symbols: downloaded once, then read from cache/symbols/
@@ -388,7 +397,13 @@ class MainWindow(QWidget):
 
         add_row = QHBoxLayout()
         add_row.setSpacing(10)
+        # Foil copies? Disabled when the edition has no foil version
+        self.foil_input = QCheckBox("Foil")
+        self.foil_input.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.foil_input.toggled.connect(self._on_search_foil_toggled)
+
         add_row.addWidget(self.quantity_input)
+        add_row.addWidget(self.foil_input)
         add_row.addWidget(self.save_button, 1)
 
         # Feedback line: searching, not found, added...
@@ -573,8 +588,8 @@ class MainWindow(QWidget):
         table = QTableWidget()
         self.collection_table = table
         table.setObjectName("collectionTable")
-        table.setColumnCount(7)
-        table.setHorizontalHeaderLabels(["", "Name", "Edition", "Rarity", "Price", "Qty", "Value"])
+        table.setColumnCount(8)
+        table.setHorizontalHeaderLabels(["", "Name", "Edition", "Rarity", "Foil", "Price", "Qty", "Value"])
 
         table.setShowGrid(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -591,10 +606,11 @@ class MainWindow(QWidget):
         header.setSectionResizeMode(COL_IMAGE, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(COL_EDITION, QHeaderView.ResizeMode.Stretch)
-        for column in (COL_RARITY, COL_PRICE, COL_QUANTITY, COL_VALUE):
+        for column in (COL_RARITY, COL_FOIL, COL_PRICE, COL_QUANTITY, COL_VALUE):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
         table.setColumnWidth(COL_IMAGE, THUMB_WIDTH + 30)
         table.setColumnWidth(COL_RARITY, 100)
+        table.setColumnWidth(COL_FOIL, 64)
         table.setColumnWidth(COL_PRICE, 130)
         table.setColumnWidth(COL_QUANTITY, 110)
         table.setColumnWidth(COL_VALUE, 110)
@@ -745,8 +761,10 @@ class MainWindow(QWidget):
         # first search answer: use its copy of the selected printing
         for printing in printings:
             if selected and printing.scryfall_id == selected.scryfall_id:
+                printing.foil = self.foil_input.isChecked()
                 self.current_card = printing
                 self._update_price_badge()
+                self._update_foil_input()
                 break
 
         count = len(printings)
@@ -817,6 +835,12 @@ class MainWindow(QWidget):
         self.owned_label.setText("")
         self.save_button.setEnabled(False)
 
+        # A new search starts as non-foil
+        self.foil_input.blockSignals(True)
+        self.foil_input.setChecked(False)
+        self.foil_input.blockSignals(False)
+        self._update_foil_input()
+
     def _show_card(self, card):
         """
         Show the card's image and data, and make it the one that will be added.
@@ -845,6 +869,10 @@ class MainWindow(QWidget):
         self._update_price_badge()
         self._update_owned_label()
         self.save_button.setEnabled(True)
+
+        # Keep the foil choice when changing edition (if the edition allows it)
+        card.foil = self.foil_input.isChecked()
+        self._update_foil_input()
 
     def _update_mana_badge(self):
         """
@@ -916,15 +944,54 @@ class MainWindow(QWidget):
 
         quantity = self.quantity_input.value()
         self.current_card.quantity = quantity
+        self.current_card.foil = self.foil_input.isChecked()
 
         save_card(self.current_card)
 
+        finish = " foil" if self.current_card.foil else ""
         self._set_status(
-            f"Added {quantity} × {self.current_card.name} "
+            f"Added {quantity} ×{finish} {self.current_card.name} "
             f"({self.current_card.printing_label}) to your collection.",
             "success",
         )
         self.show_collection()
+
+    def _update_foil_input(self):
+        """
+        Foil check box for the shown edition: disabled if it has no foil
+        version, checked and locked if it only exists in foil.
+        """
+
+        card = self.current_card
+
+        self.foil_input.blockSignals(True)
+
+        if card is None:
+            self.foil_input.setChecked(False)
+            self.foil_input.setEnabled(False)
+            self.foil_input.setToolTip("")
+        elif card.only_foil:
+            self.foil_input.setChecked(True)
+            self.foil_input.setEnabled(False)
+            self.foil_input.setToolTip("This edition only exists in foil")
+        elif not card.can_be_foil:
+            self.foil_input.setChecked(False)
+            self.foil_input.setEnabled(False)
+            self.foil_input.setToolTip("This edition has no foil version")
+        else:
+            self.foil_input.setEnabled(True)
+            self.foil_input.setToolTip("The copies you add are foil (uses the foil price)")
+
+        self.foil_input.blockSignals(False)
+
+        if card is not None:
+            card.foil = self.foil_input.isChecked()
+
+    def _on_search_foil_toggled(self, checked):
+
+        if self.current_card is not None:
+            self.current_card.foil = checked
+            self._update_price_badge()
 
     # ==================================
     # COLLECTION: LOAD AND DISPLAY
@@ -973,11 +1040,11 @@ class MainWindow(QWidget):
         since = None
 
         for card in priced:
-            previous = self.price_changes.get(card.scryfall_id)
+            previous = previous_price(self.price_changes, card)
             if previous:
-                previous_date, previous_price = previous
-                change += (card.price(currency) - previous_price) * (card.quantity or 0)
-                previous_total += previous_price * (card.quantity or 0)
+                previous_date, old_price = previous
+                change += (card.price(currency) - old_price) * (card.quantity or 0)
+                previous_total += old_price * (card.quantity or 0)
                 since = max(since, previous_date) if since else previous_date
 
         if since is None or abs(change) < 0.005:
@@ -1034,7 +1101,10 @@ class MainWindow(QWidget):
 
         for row, card in enumerate(cards):
 
-            name_item = QTableWidgetItem(card.name)
+            # Foil copies get a small ✦ next to the name
+            name_item = QTableWidgetItem(f"{card.name}  ✦" if card.foil else card.name)
+            if card.foil:
+                name_item.setToolTip("Foil")
             # The row remembers which database row it shows
             name_item.setData(Qt.ItemDataRole.UserRole, card.id)
 
@@ -1051,6 +1121,7 @@ class MainWindow(QWidget):
             table.setItem(row, COL_NAME, name_item)
             table.setItem(row, COL_EDITION, edition_item)
             table.setItem(row, COL_RARITY, rarity_item)
+            table.setCellWidget(row, COL_FOIL, self._foil_cell(card))
             table.setItem(row, COL_PRICE, self._price_item(card))
             table.setCellWidget(row, COL_QUANTITY, self._quantity_cell(card))
             table.setItem(row, COL_VALUE, value_item)
@@ -1079,20 +1150,26 @@ class MainWindow(QWidget):
                 item.setToolTip("Click “Update prices” to find this card's price")
             return item
 
-        tooltip = [f"Price: {format_money(price, currency)}"]
-        foil = card.price_usd_foil if currency == "USD" else card.price_eur_foil
-        if foil is not None:
-            tooltip.append(f"Foil: {format_money(foil, currency)}")
+        if currency == "USD":
+            normal, foil = card.price_usd, card.price_usd_foil
+        else:
+            normal, foil = card.price_eur, card.price_eur_foil
 
-        previous = self.price_changes.get(card.scryfall_id)
+        finish = "foil" if card.foil else "non-foil"
+        tooltip = [f"Price of your {finish} copies: {format_money(price, currency)}"]
+        tooltip.append(f"Normal: {format_money(normal, currency)} · Foil: {format_money(foil, currency)}")
+        if card.foil and foil is None:
+            tooltip.append("(no foil price on Scryfall: using the normal one)")
+
+        previous = previous_price(self.price_changes, card)
 
         if previous:
-            previous_date, previous_price = previous
+            previous_date, old_price = previous
             day = date.fromisoformat(previous_date)
-            tooltip.append(f"On {day.day} {day:%b}: {format_money(previous_price, currency)}")
+            tooltip.append(f"On {day.day} {day:%b}: {format_money(old_price, currency)}")
 
-            if previous_price:
-                percent = (price - previous_price) / previous_price * 100
+            if old_price:
+                percent = (price - old_price) / old_price * 100
 
                 if abs(percent) >= PRICE_CHANGE_THRESHOLD:
                     arrow = "▲" if percent > 0 else "▼"
@@ -1101,6 +1178,45 @@ class MainWindow(QWidget):
 
         item.setToolTip("\n".join(tooltip))
         return item
+
+    def _foil_cell(self, card):
+        """
+        A centered check box: are these copies foil? Changing it moves the
+        copies to the foil / non-foil row of the same edition.
+        """
+
+        check = QCheckBox()
+        check.setObjectName("foilCheck")
+        check.setChecked(card.foil)
+        check.setCursor(Qt.CursorShape.PointingHandCursor)
+        check.setToolTip("Foil copies (uses the foil price)")
+        check.toggled.connect(lambda checked, card_id=card.id: self._on_foil_changed(card_id, checked))
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(check, 0, Qt.AlignmentFlag.AlignCenter)
+
+        cell = QWidget()
+        cell.setLayout(layout)
+        return cell
+
+    def _on_foil_changed(self, card_id, foil):
+
+        card = next((c for c in self.collection_cards if c.id == card_id), None)
+        kept_id = set_card_foil(card_id, foil)
+
+        # Redraw after the click has finished (the check box is replaced)
+        QTimer.singleShot(0, self.show_collection)
+
+        if card is None:
+            return
+
+        finish = "foil" if foil else "non-foil"
+        if kept_id != card_id:
+            text = f"{card.name} marked as {finish} and merged with the {finish} copies you already had."
+        else:
+            text = f"{card.name} ({card.printing_label}) marked as {finish}."
+        QTimer.singleShot(0, lambda: self._set_collection_status(text, "success"))
 
     def _quantity_cell(self, card):
         """
@@ -1178,7 +1294,7 @@ class MainWindow(QWidget):
 
             text = ""
             if card:
-                fields = [card.name, card.printing_label, card.type_line, card.rarity]
+                fields = [card.name, card.printing_label, card.type_line, card.rarity, "foil" if card.foil else ""]
                 text = " ".join(field for field in fields if field).lower()
 
             matches = all(word in text for word in words)
@@ -1305,7 +1421,12 @@ class MainWindow(QWidget):
         self._finish_price_update()
         self.show_collection()
 
-        message = f"Prices updated for {plural(result['updated'], 'printing')}."
+        # Deck cards got fresh prices too
+        self.decks_page.refresh_deck()
+
+        message = f"Prices updated for {plural(result['updated'], 'printing')}"
+        deck_printings = result.get("deck_printings", 0)
+        message += f" and {deck_printings} in your decks." if deck_printings else "."
 
         upgraded = result["upgraded"]
         if upgraded:
@@ -1470,15 +1591,16 @@ class MainWindow(QWidget):
         same_name = [c for c in self.collection_cards if (c.name or "").lower() == name]
 
         total = sum(c.quantity or 0 for c in same_name)
-        this_edition = sum(
-            c.quantity or 0
-            for c in same_name
-            if card.scryfall_id and c.scryfall_id == card.scryfall_id
-        )
+        edition_rows = [
+            c for c in same_name if card.scryfall_id and c.scryfall_id == card.scryfall_id
+        ]
+        this_edition = sum(c.quantity or 0 for c in edition_rows)
+        foil_copies = sum(c.quantity or 0 for c in edition_rows if c.foil)
 
         if total == 0:
             self.owned_label.setText("Not in your collection yet")
         else:
+            foil_text = f" ({foil_copies} foil)" if foil_copies else ""
             self.owned_label.setText(
-                f"In your collection: {this_edition} of this edition · {total} in total"
+                f"In your collection: {this_edition} of this edition{foil_text} · {total} in total"
             )

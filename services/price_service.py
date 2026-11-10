@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 from api.scryfall_api import get_cards_by_identifiers, get_set_codes
+from database import deck_manager
 from database.database_manager import (
     get_all_cards,
     save_prices,
@@ -114,24 +115,50 @@ def refresh_prices():
     upgraded = _upgrade_legacy_cards(get_all_cards())
 
     cards = get_all_cards()
-    with_id = [card for card in cards if card.scryfall_id]
+    collection_ids = {card.scryfall_id for card in cards if card.scryfall_id}
 
-    results = get_cards_by_identifiers([{"id": card.scryfall_id} for card in with_id])
+    # Deck cards too (one request for up to 75 printings, shared with the collection)
+    deck_ids = set(deck_manager.get_deck_scryfall_ids())
+    all_ids = sorted(collection_ids | deck_ids)
+
+    results = get_cards_by_identifiers([{"id": scryfall_id} for scryfall_id in all_ids])
     fresh = [found for _, found in results if found]
 
-    save_prices(fresh)
+    save_prices([card for card in fresh if card.scryfall_id in collection_ids])
+    deck_manager.update_deck_prices([card for card in fresh if card.scryfall_id in deck_ids])
+
+    updated_collection = sum(card.scryfall_id in collection_ids for card in fresh)
 
     return {
-        "updated": len(fresh),
+        "updated": updated_collection,
         "upgraded": upgraded,
-        "missing": len(cards) - len(fresh),
+        "missing": len(cards) - updated_collection,
+        "deck_printings": sum(card.scryfall_id in deck_ids for card in fresh),
     }
+
+
+def deck_prices_need_update():
+    """
+    True if some deck card has no price date or it is older than PRICES_MAX_AGE.
+    """
+
+    oldest = deck_manager.oldest_deck_price_update()
+
+    if oldest is None:
+        return False
+
+    try:
+        return datetime.fromisoformat(oldest) < datetime.now() - PRICES_MAX_AGE
+    except ValueError:
+        return True
 
 
 def get_price_changes(currency="EUR"):
     """
-    Return {scryfall_id: (date, previous price of one copy)} using the last
-    price recorded before today, with the same normal/foil rule as Card.price().
+    Return {(scryfall_id, is_foil): (date, previous price of one copy)} using
+    the last price recorded before today, for both finishes, with the same
+    rule as Card.price() (the other finish's price if one is missing).
+    Look it up with previous_price(changes, card).
     """
 
     changes = {}
@@ -140,9 +167,15 @@ def get_price_changes(currency="EUR"):
 
         normal = entry[_HISTORY_INDEX[(currency, False)]]
         foil = entry[_HISTORY_INDEX[(currency, True)]]
-        previous = normal if normal is not None else foil
 
-        if previous is not None:
-            changes[scryfall_id] = (entry[0], previous)
+        for is_foil, first, second in ((False, normal, foil), (True, foil, normal)):
+            previous = first if first is not None else second
+            if previous is not None:
+                changes[(scryfall_id, is_foil)] = (entry[0], previous)
 
     return changes
+
+
+def previous_price(changes, card):
+    """(date, previous price) of this card's printing and finish, or None."""
+    return changes.get((card.scryfall_id, card.foil))

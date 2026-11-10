@@ -74,6 +74,11 @@ def create_deck_tables(conn):
     ON deck_cards (deck_id, scryfall_id, section)
     """)
 
+    # Migration: when the prices of each line were last updated
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(deck_cards)")}
+    if "prices_updated_at" not in columns:
+        conn.execute("ALTER TABLE deck_cards ADD COLUMN prices_updated_at TEXT")
+
 
 def _now():
     return datetime.now().isoformat(timespec="seconds")
@@ -231,6 +236,10 @@ def add_card_to_deck(deck_id, card, quantity, section):
             )
             row_id = cursor.lastrowid
 
+        # The card comes from Scryfall: its prices are current
+        conn.execute(
+            "UPDATE deck_cards SET prices_updated_at = ? WHERE id = ?", (_now(), row_id)
+        )
         _touch(conn, deck_id)
 
     return row_id
@@ -338,10 +347,65 @@ def change_deck_card_printing(deck_card_id, new_card):
         if merged is None:
             assignments = ", ".join(f"{name} = ?" for name in DECK_CARD_FIELDS)
             conn.execute(
-                f"UPDATE deck_cards SET {assignments} WHERE id = ?",
-                (*_card_values(new_card), deck_card_id),
+                f"UPDATE deck_cards SET {assignments}, prices_updated_at = ? WHERE id = ?",
+                (*_card_values(new_card), _now(), deck_card_id),
             )
 
         _touch(conn, deck_id)
 
         return merged or deck_card_id
+
+
+# ==================================
+# PRICES
+# ==================================
+
+def get_deck_scryfall_ids():
+    """Every printing used in any deck (to update their prices)."""
+
+    with _connect() as conn:
+        rows = conn.execute("SELECT DISTINCT scryfall_id FROM deck_cards").fetchall()
+
+    return [row[0] for row in rows if row[0]]
+
+
+def oldest_deck_price_update():
+    """
+    ISO date of the oldest price update among deck cards, "" if some card
+    never had one, or None when no deck has cards.
+    """
+
+    with _connect() as conn:
+        row = conn.execute("""
+        SELECT COUNT(*), SUM(prices_updated_at IS NULL), MIN(prices_updated_at)
+        FROM deck_cards
+        """).fetchone()
+
+    count, never, oldest = row
+
+    if not count:
+        return None
+
+    return "" if never else oldest
+
+
+def update_deck_prices(cards):
+    """
+    Store fresh Scryfall prices in every deck line using these printings.
+    """
+
+    now = _now()
+
+    with _connect() as conn, conn:
+        for card in cards:
+            if not card.scryfall_id:
+                continue
+            conn.execute("""
+            UPDATE deck_cards
+            SET price_eur = ?, price_eur_foil = ?, price_usd = ?, price_usd_foil = ?,
+                prices_updated_at = ?
+            WHERE scryfall_id = ?
+            """, (
+                card.price_eur, card.price_eur_foil, card.price_usd, card.price_usd_foil,
+                now, card.scryfall_id,
+            ))
