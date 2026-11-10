@@ -476,7 +476,7 @@ Decisiones del autor:
 - Ideas pendientes: estadísticas por mazo, contador de turnos y temporizador, historial y gráfico
   de vidas, Planechase/Archenemy, atajos de teclado, ventana aparte.
 
-## Varias colecciones y filtros (10 nov 2026 — commit PENDING)
+## Varias colecciones y filtros (10 nov 2026 — commit adfd965)
 
 ### Colecciones con nombre
 - `database/collection_manager.py` (tabla, migración, `move_cards`, `delete_collection`) y
