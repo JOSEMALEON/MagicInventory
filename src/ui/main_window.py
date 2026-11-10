@@ -22,8 +22,9 @@ from services.card_service import (
     get_collection,
     ScryfallError,
 )
-from services.image_service import get_card_pixmap
+from services.image_service import load_card_image, to_pixmap
 from database.database_manager import create_database
+from src.ui.background import BackgroundRunner
 
 
 class MainWindow(QWidget):
@@ -212,6 +213,15 @@ class MainWindow(QWidget):
         self.current_card = None
         self.printings = []
 
+        # Network and disk work runs here so the window never freezes
+        self.background = BackgroundRunner()
+
+        # Each new request increases its counter; when an answer arrives,
+        # it is ignored if a newer request has been made in the meantime
+        self._search_id = 0
+        self._image_id = 0
+        self._collection_id = 0
+
         # Show the saved collection as soon as the app opens
         self.show_collection()
 
@@ -221,39 +231,69 @@ class MainWindow(QWidget):
 
     def search_card(self):
 
-        card_name = self.search_input.text()
+        card_name = self.search_input.text().strip()
 
         if not card_name:
             self.result_area.setText("Please enter a card name")
             return
 
-        try:
-            card = search_card(card_name)
-        except ScryfallError:
-            self.result_area.setText(
-                "Could not connect to Scryfall.\nCheck your connection and try again."
-            )
+        self._search_id += 1
+        search_id = self._search_id
+
+        # Forget the previous card so "Add to Collection" can't add it by mistake
+        self.current_card = None
+        self._set_printings([])
+        self._image_id += 1
+        self.card_image.clear()
+        self.result_area.setText(f"Searching \"{card_name}\"...")
+        self.search_input.clear()
+
+        self.background.run(
+            lambda: search_card(card_name),
+            on_success=lambda card: self._on_card_found(search_id, card),
+            on_error=lambda error: self._on_search_error(search_id, error),
+        )
+
+    def _on_card_found(self, search_id, card):
+
+        if search_id != self._search_id:
             return
 
         if not card:
-            # Forget the previous card so "Add to Collection" can't add it by mistake
-            self.current_card = None
-            self._set_printings([])
-            self.card_image.clear()
             self.result_area.setText("Card not found")
-            self.search_input.clear()
             return
 
         self._show_card(card)
-        self.search_input.clear()
 
-        try:
-            printings = get_printings(card)
-        except ScryfallError:
-            # The card itself is fine; just offer the default edition
-            printings = [card]
+        # Show the default edition now; the full list arrives later
+        self._set_printings([card], selected=card)
 
-        self._set_printings(printings, selected=card)
+        self.background.run(
+            lambda: get_printings(card),
+            on_success=lambda printings: self._on_printings_loaded(search_id, card, printings),
+            # The card itself is fine; just keep offering the default edition
+            on_error=lambda error: None,
+        )
+
+    def _on_search_error(self, search_id, error):
+
+        if search_id != self._search_id:
+            return
+
+        if isinstance(error, ScryfallError):
+            self.result_area.setText(
+                "Could not connect to Scryfall.\nCheck your connection and try again."
+            )
+        else:
+            self.result_area.setText(f"Unexpected error: {error}")
+
+    def _on_printings_loaded(self, search_id, card, printings):
+
+        if search_id != self._search_id:
+            return
+
+        # Keep whatever edition the user may have picked meanwhile
+        self._set_printings(printings, selected=self.current_card or card)
 
     # ==================================
     # EDITION SELECTOR
@@ -296,11 +336,14 @@ class MainWindow(QWidget):
 
         self.current_card = card
 
-        pixmap = get_card_pixmap(card.image_url, width=200)
-        if pixmap:
-            self.card_image.setPixmap(pixmap)
-        else:
-            self.card_image.clear()
+        self._image_id += 1
+        image_id = self._image_id
+        self.card_image.clear()
+
+        self.background.run(
+            lambda: load_card_image(card.image_url, width=200),
+            on_success=lambda image: self._on_card_image_loaded(image_id, image),
+        )
 
         result_text = f"""
 Name: {card.name}
@@ -310,6 +353,14 @@ Mana Cost: {card.mana_cost}
 Rarity: {card.rarity}
 """
         self.result_area.setText(result_text)
+
+    def _on_card_image_loaded(self, image_id, image):
+
+        # Ignore images of an edition the user has already moved away from
+        if image_id != self._image_id or image is None:
+            return
+
+        self.card_image.setPixmap(to_pixmap(image))
 
     # ==================================
     # SAVE CARD
@@ -337,9 +388,9 @@ Rarity: {card.rarity}
 
         cards = get_collection()
 
-        if not cards:
-            self.collection_table.setRowCount(0)
-            return
+        # Images still loading for the previous table must not land in this one
+        self._collection_id += 1
+        collection_id = self._collection_id
 
         # Remove old images/texts so a row never shows another card's data
         self.collection_table.clearContents()
@@ -347,13 +398,23 @@ Rarity: {card.rarity}
 
         for row, card in enumerate(cards):
 
-            pixmap = get_card_pixmap(card.image_url, width=100, height=140)
-
-            if pixmap:
-                label = QLabel()
-                label.setPixmap(pixmap)
-                self.collection_table.setCellWidget(row, 0, label)
-
             self.collection_table.setItem(row, 1, QTableWidgetItem(card.name))
             self.collection_table.setItem(row, 2, QTableWidgetItem(card.printing_label))
             self.collection_table.setItem(row, 3, QTableWidgetItem(str(card.quantity)))
+
+            # Default arguments freeze the current row/url for each lambda
+            self.background.run(
+                lambda url=card.image_url: load_card_image(url, width=100, height=140),
+                on_success=lambda image, row=row: self._on_table_image_loaded(
+                    collection_id, row, image
+                ),
+            )
+
+    def _on_table_image_loaded(self, collection_id, row, image):
+
+        if collection_id != self._collection_id or image is None:
+            return
+
+        label = QLabel()
+        label.setPixmap(to_pixmap(image))
+        self.collection_table.setCellWidget(row, 0, label)

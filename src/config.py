@@ -11,6 +11,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = BASE_DIR / "magic_inventory.db"
 STYLES_PATH = BASE_DIR / "src" / "ui" / "styles.qss"
 
+# Downloaded card images, so each one is only downloaded once
+IMAGE_CACHE_DIR = BASE_DIR / "cache" / "images"
+
 # =============================
 # NETWORK
 # =============================
