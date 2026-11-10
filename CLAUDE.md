@@ -152,7 +152,7 @@ Tabla `price_history`: `scryfall_id, date, price_eur, price_eur_foil, price_usd,
 - `requirements.txt` reescrito en UTF-8 con solo `PySide6>=6.10` y `requests>=2.32`
   (antes era un `pip freeze` en UTF-16 con PyAutoGUI, pynput, keyboard...).
 
-### Hecho (seguimiento de precios, roadmap, 10 nov 2026 — commit PENDING_HASH)
+### Hecho (seguimiento de precios, roadmap, 10 nov 2026 — commit 3bf17f2)
 - Precios EUR/USD (normal y foil) de Scryfall guardados por fila + historial diario (`price_history`).
 - "Update prices" y actualización automática al abrir si los precios tienen > 20 h (`PRICES_MAX_AGE`).
   Usa `/cards/collection` (75 cartas por petición).
@@ -168,7 +168,7 @@ Tabla `price_history`: `scryfall_id, date, price_eur, price_eur_foil, price_usd,
   a veces devuelve la misma edición sin precio EUR.
 - En los tests, redirigir `QSettings` a un .ini temporal para no tocar el registro del usuario.
 
-### Hecho (importar/exportar listas, 10 nov 2026 — commit PENDING_HASH)
+### Hecho (importar/exportar listas, 10 nov 2026 — commit 3bf17f2)
 - Sidebar: Search, **Import cards**, Collection. `show_page()` usa un dict página -> botón.
 - Formato de lista: `4 Sol Ring`, `4x Sol Ring`, `1 Sol Ring (CMM) 410`. Se ignoran líneas vacías,
   comentarios (`#`, `//`), cabeceras ("Deck", "Sideboard:"...) y marcas `*F*`. Una línea sin cantidad
