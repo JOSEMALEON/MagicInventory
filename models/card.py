@@ -14,6 +14,11 @@ class Card:
         collector_number=None,
         prints_search_uri=None,
         id=None,
+        price_eur=None,
+        price_eur_foil=None,
+        price_usd=None,
+        price_usd_foil=None,
+        prices_updated_at=None,
     ):
 
         self.name = name
@@ -34,6 +39,38 @@ class Card:
 
         # Row id in the database (None for cards that come from Scryfall)
         self.id = id
+
+        # Market prices from Scryfall (None = no price for that finish/currency)
+        self.price_eur = price_eur
+        self.price_eur_foil = price_eur_foil
+        self.price_usd = price_usd
+        self.price_usd_foil = price_usd_foil
+        # ISO date-time of the last price update (None if never updated)
+        self.prices_updated_at = prices_updated_at
+
+
+    def price(self, currency="EUR"):
+        """
+        Price of one copy in "EUR" or "USD". Uses the normal (non-foil) price;
+        printings that only exist in foil fall back to the foil price.
+        Return None if Scryfall has no price.
+        """
+
+        if currency == "USD":
+            normal, foil = self.price_usd, self.price_usd_foil
+        else:
+            normal, foil = self.price_eur, self.price_eur_foil
+
+        return normal if normal is not None else foil
+
+
+    def value(self, currency="EUR"):
+        """
+        price x quantity, or None if there is no price.
+        """
+
+        price = self.price(currency)
+        return None if price is None else price * (self.quantity or 0)
 
 
     @property

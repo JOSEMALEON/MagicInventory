@@ -18,9 +18,13 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QDialog,
+    QFileDialog,
 )
 
-from PySide6.QtCore import Qt
+from datetime import date
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 
 from services.card_service import (
@@ -34,11 +38,20 @@ from services.card_service import (
     ScryfallError,
 )
 from services.image_service import load_card_image, to_pixmap
+from services.list_service import export_collection as save_collection_file
+from services.price_service import (
+    refresh_prices,
+    prices_need_update,
+    last_price_update,
+    get_price_changes,
+    format_money,
+)
 from database.database_manager import create_database
 from src.config import RARITY_COLORS
 from src.ui.background import BackgroundRunner
 from src.ui.edition_dialog import EditionDialog
-from src.ui.widgets import QuantitySpinBox, set_status, styled_panel
+from src.ui.import_page import ImportPage
+from src.ui.widgets import QuantitySpinBox, printing_text, set_status, styled_panel
 
 
 # Size of the big card image on the search page (Scryfall "normal" ratio)
@@ -50,23 +63,72 @@ THUMB_WIDTH = 90
 THUMB_HEIGHT = 126
 
 # Collection table columns
-COL_IMAGE, COL_NAME, COL_EDITION, COL_RARITY, COL_QUANTITY = range(5)
+COL_IMAGE, COL_NAME, COL_EDITION, COL_RARITY, COL_PRICE, COL_QUANTITY, COL_VALUE = range(7)
+
+CURRENCIES = ["EUR", "USD"]
+
+EXPORT_CSV_FILTER = "CSV spreadsheet with prices (*.csv)"
+EXPORT_TXT_FILTER = "Text list, can be imported again (*.txt)"
+
+# A price change smaller than this (in %) is shown as "no change"
+PRICE_CHANGE_THRESHOLD = 1.0
+
+# Colors for price changes (same as the success/error messages)
+PRICE_UP_COLOR = "#4ADE80"
+PRICE_DOWN_COLOR = "#F87171"
 
 # Rarity order used when sorting the collection (best first)
 RARITY_ORDER = {"mythic": 0, "rare": 1, "uncommon": 2, "common": 3, "special": 4, "bonus": 5}
 
 # Sort options of the collection: label -> (key function, reverse)
+# Each key function receives (card, currency); cards without price go last
 SORT_OPTIONS = {
-    "Name (A–Z)": (lambda card: ((card.name or "").lower(), card.printing_label.lower()), False),
-    "Recently added": (lambda card: card.id or 0, True),
-    "Quantity (high–low)": (lambda card: (card.quantity or 0), True),
-    "Edition": (lambda card: (card.printing_label.lower(), (card.name or "").lower()), False),
-    "Rarity": (lambda card: (RARITY_ORDER.get(card.rarity, 9), (card.name or "").lower()), False),
+    "Name (A–Z)": (lambda card, cur: ((card.name or "").lower(), card.printing_label.lower()), False),
+    "Recently added": (lambda card, cur: card.id or 0, True),
+    "Value (high–low)": (lambda card, cur: card.value(cur) or -1, True),
+    "Price (high–low)": (lambda card, cur: card.price(cur) or -1, True),
+    "Quantity (high–low)": (lambda card, cur: (card.quantity or 0), True),
+    "Edition": (lambda card, cur: (card.printing_label.lower(), (card.name or "").lower()), False),
+    "Rarity": (lambda card, cur: (RARITY_ORDER.get(card.rarity, 9), (card.name or "").lower()), False),
 }
 
 
 def plural(count, word):
     return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+def price_badge_text(card, currency):
+    """
+    "€4.66 · Foil €12.00", only with the prices Scryfall has.
+    """
+
+    if currency == "USD":
+        normal, foil = card.price_usd, card.price_usd_foil
+    else:
+        normal, foil = card.price_eur, card.price_eur_foil
+
+    parts = []
+    if normal is not None:
+        parts.append(format_money(normal, currency))
+    if foil is not None:
+        parts.append(f"Foil {format_money(foil, currency)}")
+
+    return " · ".join(parts)
+
+
+def describe_update_time(moment):
+    """
+    datetime -> "today at 13:12", "yesterday at 09:00" or "on 3 Nov".
+    """
+
+    days = (date.today() - moment.date()).days
+
+    if days == 0:
+        return f"today at {moment:%H:%M}"
+    if days == 1:
+        return f"yesterday at {moment:%H:%M}"
+
+    return f"on {moment.day} {moment:%b}"
 
 
 def format_mana_cost(mana_cost):
@@ -101,6 +163,17 @@ class MainWindow(QWidget):
         self.collection_cards = []
         self._thumbnails = {}
 
+        # Preferences that survive between sessions (stored by Qt in the
+        # Windows registry): currency and collection sort order
+        self.settings = QSettings("MagicInventory", "MagicInventory")
+        self.currency = self.settings.value("currency", "EUR")
+        if self.currency not in CURRENCIES:
+            self.currency = "EUR"
+
+        # {scryfall_id: (date, previous price)} for the current currency
+        self.price_changes = {}
+        self._updating_prices = False
+
         # Network and disk work runs here so the window never freezes
         self.background = BackgroundRunner()
 
@@ -127,7 +200,13 @@ class MainWindow(QWidget):
         # One page per sidebar button; only the current one is visible
         self.pages = QStackedWidget()
         self.search_page = self._build_search_page()
+        self.import_page = ImportPage(
+            self.background,
+            on_cards_added=self.show_collection,
+            get_currency=lambda: self.currency,
+        )
         self.collection_page = self._build_collection_page()
+        self.pages.addWidget(self.import_page)
         self.pages.addWidget(self.search_page)
         self.pages.addWidget(self.collection_page)
 
@@ -142,6 +221,10 @@ class MainWindow(QWidget):
 
         # Load the saved collection as soon as the app opens
         self.show_collection()
+
+        # Scryfall updates prices daily: refresh them if they are old
+        if self.collection_cards and prices_need_update(self.collection_cards):
+            self.update_prices()
 
     # ==================================
     # LAYOUT BUILDERS
@@ -189,13 +272,14 @@ class MainWindow(QWidget):
         sidebar_layout.addWidget(section)
 
         self.search_nav = QPushButton("Search")
+        self.import_nav = QPushButton("Import cards")
         self.collection_nav = QPushButton("Collection")
 
         # Exclusive checkable buttons: the active page stays highlighted
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
 
-        for button in (self.search_nav, self.collection_nav):
+        for button in (self.search_nav, self.import_nav, self.collection_nav):
             button.setObjectName("navButton")
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -203,6 +287,7 @@ class MainWindow(QWidget):
             sidebar_layout.addWidget(button)
 
         self.search_nav.clicked.connect(lambda: self.show_page(self.search_page))
+        self.import_nav.clicked.connect(lambda: self.show_page(self.import_page))
         self.collection_nav.clicked.connect(lambda: self.show_page(self.collection_page))
 
         sidebar_layout.addStretch()
@@ -238,10 +323,15 @@ class MainWindow(QWidget):
         self.card_rarity = QLabel()
         self.card_rarity.setObjectName("rarityBadge")
 
+        # "€4.66 · Foil €12.00"
+        self.card_price = QLabel()
+        self.card_price.setObjectName("priceBadge")
+
         meta_row = QHBoxLayout()
         meta_row.setSpacing(10)
         meta_row.addWidget(self.card_mana)
         meta_row.addWidget(self.card_rarity)
+        meta_row.addWidget(self.card_price)
         meta_row.addStretch()
 
         self.card_set = QLabel()
@@ -353,10 +443,65 @@ class MainWindow(QWidget):
         refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
         refresh_button.clicked.connect(self.show_collection)
 
-        header_layout.addWidget(collection_title)
-        header_layout.addWidget(self.collection_summary, 0, Qt.AlignmentFlag.AlignBottom)
+        # ---------- Collection value ----------
+
+        value_caption = QLabel("COLLECTION VALUE")
+        value_caption.setObjectName("fieldLabel")
+
+        # "€23.87"
+        self.value_label = QLabel()
+        self.value_label.setObjectName("valueLabel")
+
+        # "▲ €2.10 since 1 Nov"
+        self.value_change_label = QLabel()
+        self.value_change_label.setObjectName("valueChange")
+
+        # "Prices updated today at 13:12"
+        self.prices_date_label = QLabel()
+        self.prices_date_label.setObjectName("mutedSmall")
+
+        value_row = QHBoxLayout()
+        value_row.setSpacing(10)
+        value_row.addWidget(self.value_label)
+        value_row.addWidget(self.value_change_label, 0, Qt.AlignmentFlag.AlignBottom)
+        value_row.addStretch()
+
+        value_box = QVBoxLayout()
+        value_box.setSpacing(2)
+        value_box.addWidget(value_caption)
+        value_box.addLayout(value_row)
+        value_box.addWidget(self.prices_date_label)
+
+        self.currency_input = QComboBox()
+        self.currency_input.addItems(CURRENCIES)
+        self.currency_input.setCurrentText(self.currency)
+        self.currency_input.setToolTip("Currency for prices")
+        self.currency_input.currentTextChanged.connect(self._on_currency_changed)
+
+        self.update_prices_button = QPushButton("Update prices")
+        self.update_prices_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_prices_button.setToolTip("Download today's prices from Scryfall")
+        self.update_prices_button.clicked.connect(self.update_prices)
+
+        self.export_button = QPushButton("Export…")
+        self.export_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_button.setToolTip("Save the whole collection as a .csv spreadsheet or a .txt list")
+        self.export_button.clicked.connect(self.export_collection)
+
+        title_box = QHBoxLayout()
+        title_box.setSpacing(14)
+        title_box.addWidget(collection_title)
+        title_box.addWidget(self.collection_summary)
+
+        header_layout.addLayout(title_box)
+        header_layout.setAlignment(title_box, Qt.AlignmentFlag.AlignVCenter)
         header_layout.addStretch()
-        header_layout.addWidget(refresh_button)
+        header_layout.addLayout(value_box)
+        header_layout.addSpacing(24)
+        header_layout.addWidget(self.currency_input, 0, Qt.AlignmentFlag.AlignVCenter)
+        header_layout.addWidget(self.update_prices_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        header_layout.addWidget(self.export_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        header_layout.addWidget(refresh_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         # ---------- Toolbar: filter, sort and actions ----------
 
@@ -371,7 +516,13 @@ class MainWindow(QWidget):
 
         self.sort_input = QComboBox()
         self.sort_input.addItems(list(SORT_OPTIONS))
-        self.sort_input.currentIndexChanged.connect(self._render_collection)
+
+        # Restore the last sort order used
+        saved_sort = self.settings.value("sort", "")
+        if saved_sort in SORT_OPTIONS:
+            self.sort_input.setCurrentText(saved_sort)
+
+        self.sort_input.currentIndexChanged.connect(self._on_sort_changed)
 
         self.selection_label = QLabel()
         self.selection_label.setObjectName("mutedLabel")
@@ -401,8 +552,8 @@ class MainWindow(QWidget):
         table = QTableWidget()
         self.collection_table = table
         table.setObjectName("collectionTable")
-        table.setColumnCount(5)
-        table.setHorizontalHeaderLabels(["", "Name", "Edition", "Rarity", "Qty"])
+        table.setColumnCount(7)
+        table.setHorizontalHeaderLabels(["", "Name", "Edition", "Rarity", "Price", "Qty", "Value"])
 
         table.setShowGrid(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -419,11 +570,13 @@ class MainWindow(QWidget):
         header.setSectionResizeMode(COL_IMAGE, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(COL_EDITION, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(COL_RARITY, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(COL_QUANTITY, QHeaderView.ResizeMode.Fixed)
+        for column in (COL_RARITY, COL_PRICE, COL_QUANTITY, COL_VALUE):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
         table.setColumnWidth(COL_IMAGE, THUMB_WIDTH + 30)
-        table.setColumnWidth(COL_RARITY, 110)
-        table.setColumnWidth(COL_QUANTITY, 120)
+        table.setColumnWidth(COL_RARITY, 100)
+        table.setColumnWidth(COL_PRICE, 130)
+        table.setColumnWidth(COL_QUANTITY, 110)
+        table.setColumnWidth(COL_VALUE, 110)
 
         table.itemSelectionChanged.connect(self._update_selection_actions)
         table.cellDoubleClicked.connect(lambda row, column: self.change_selected_edition())
@@ -461,8 +614,12 @@ class MainWindow(QWidget):
         self.pages.setCurrentWidget(page)
 
         # Keep the sidebar in sync, also when the page changes from code
-        nav_button = self.search_nav if page is self.search_page else self.collection_nav
-        nav_button.setChecked(True)
+        nav_buttons = {
+            self.search_page: self.search_nav,
+            self.import_page: self.import_nav,
+            self.collection_page: self.collection_nav,
+        }
+        nav_buttons[page].setChecked(True)
 
     # ==================================
     # STATUS MESSAGES
@@ -547,7 +704,16 @@ class MainWindow(QWidget):
             return
 
         # Keep whatever edition the user may have picked meanwhile
-        self._set_printings(printings, selected=self.current_card or card)
+        selected = self.current_card or card
+        self._set_printings(printings, selected=selected)
+
+        # The list sometimes has more complete data (e.g. prices) than the
+        # first search answer: use its copy of the selected printing
+        for printing in printings:
+            if selected and printing.scryfall_id == selected.scryfall_id:
+                self.current_card = printing
+                self._update_price_badge()
+                break
 
         count = len(printings)
         self._set_status(f"{count} edition{'s' if count != 1 else ''} available.")
@@ -575,7 +741,7 @@ class MainWindow(QWidget):
         selected_index = 0
 
         for index, printing in enumerate(printings):
-            self.edition_input.addItem(printing.printing_label)
+            self.edition_input.addItem(printing_text(printing, self.currency))
 
             if selected and printing.scryfall_id == selected.scryfall_id:
                 selected_index = index
@@ -612,6 +778,7 @@ class MainWindow(QWidget):
         self.card_type.setText("")
         self.card_mana.hide()
         self.card_rarity.hide()
+        self.card_price.hide()
         self.card_set.setText("")
         self.owned_label.setText("")
         self.save_button.setEnabled(False)
@@ -641,8 +808,15 @@ class MainWindow(QWidget):
         self.card_mana.show()
         self.card_set.setText(card.printing_label)
         self._set_rarity(card.rarity)
+        self._update_price_badge()
         self._update_owned_label()
         self.save_button.setEnabled(True)
+
+    def _update_price_badge(self):
+
+        price_text = price_badge_text(self.current_card, self.currency) if self.current_card else ""
+        self.card_price.setText(price_text)
+        self.card_price.setVisible(bool(price_text))
 
     def _set_rarity(self, rarity):
 
@@ -700,17 +874,75 @@ class MainWindow(QWidget):
         """
 
         self.collection_cards = get_collection()
+        self.price_changes = get_price_changes(self.currency)
 
         self._update_collection_summary()
+        self._update_prices_date()
         self._render_collection()
         self._update_owned_label()
 
     def _update_collection_summary(self):
+        """
+        Header: number of printings/cards, total value and its change.
+        """
 
-        total = sum(card.quantity or 0 for card in self.collection_cards)
+        cards = self.collection_cards
+        currency = self.currency
+
+        total = sum(card.quantity or 0 for card in cards)
         self.collection_summary.setText(
-            f"{plural(len(self.collection_cards), 'printing')} · {plural(total, 'card')}"
+            f"{plural(len(cards), 'printing')} · {plural(total, 'card')}"
         )
+
+        priced = [card for card in cards if card.price(currency) is not None]
+        unpriced = [card for card in cards if card.price(currency) is None]
+
+        self.value_label.setText(format_money(sum(card.value(currency) for card in priced), currency))
+
+        if unpriced:
+            names = ", ".join(sorted({card.name for card in unpriced}))
+            self.value_label.setToolTip(f"Not included (no {currency} price): {names}")
+        else:
+            self.value_label.setToolTip("")
+
+        # Change of the current cards' value since the previous recorded prices
+        change = 0.0
+        previous_total = 0.0
+        since = None
+
+        for card in priced:
+            previous = self.price_changes.get(card.scryfall_id)
+            if previous:
+                previous_date, previous_price = previous
+                change += (card.price(currency) - previous_price) * (card.quantity or 0)
+                previous_total += previous_price * (card.quantity or 0)
+                since = max(since, previous_date) if since else previous_date
+
+        if since is None or abs(change) < 0.005:
+            self.value_change_label.setText("")
+            return
+
+        arrow = "▲" if change > 0 else "▼"
+        percent = f" ({change / previous_total:+.1%})" if previous_total else ""
+        since_date = date.fromisoformat(since)
+
+        self.value_change_label.setText(
+            f"{arrow} {format_money(abs(change), currency)}{percent} since {since_date.day} {since_date:%b}"
+        )
+        set_status(self.value_change_label, self.value_change_label.text(), "success" if change > 0 else "error")
+
+    def _update_prices_date(self):
+
+        if self._updating_prices:
+            self.prices_date_label.setText("Updating prices…")
+            return
+
+        updated = last_price_update(self.collection_cards)
+
+        if updated is None:
+            self.prices_date_label.setText("No prices yet")
+        else:
+            self.prices_date_label.setText(f"Prices updated {describe_update_time(updated)}")
 
     def _render_collection(self):
         """
@@ -718,7 +950,14 @@ class MainWindow(QWidget):
         """
 
         key, reverse = SORT_OPTIONS[self.sort_input.currentText()]
-        cards = sorted(self.collection_cards, key=key, reverse=reverse)
+        cards = sorted(
+            self.collection_cards,
+            key=lambda card: key(card, self.currency),
+            reverse=reverse,
+        )
+
+        # Value cells, to update them when a quantity changes
+        self._value_items = {}
 
         # Images still loading for the previous table must not land in this one
         self._collection_id += 1
@@ -743,15 +982,63 @@ class MainWindow(QWidget):
             if card.rarity in RARITY_COLORS:
                 rarity_item.setForeground(QColor(RARITY_COLORS[card.rarity]))
 
+            value_item = QTableWidgetItem(format_money(card.value(self.currency), self.currency))
+            value_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self._value_items[card.id] = value_item
+
             table.setItem(row, COL_NAME, name_item)
             table.setItem(row, COL_EDITION, edition_item)
             table.setItem(row, COL_RARITY, rarity_item)
+            table.setItem(row, COL_PRICE, self._price_item(card))
             table.setCellWidget(row, COL_QUANTITY, self._quantity_cell(card))
+            table.setItem(row, COL_VALUE, value_item)
 
             self._set_thumbnail(collection_id, row, card.image_url)
 
         self._apply_filter()
         self._update_selection_actions()
+
+    def _price_item(self, card):
+        """
+        Price of one copy, with an arrow when it changed since the previous
+        recorded price (details in the tooltip).
+        """
+
+        currency = self.currency
+        price = card.price(currency)
+
+        item = QTableWidgetItem(format_money(price, currency))
+        item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        if price is None:
+            if card.scryfall_id:
+                item.setToolTip(f"Scryfall has no {currency} price for this printing")
+            else:
+                item.setToolTip("Click “Update prices” to find this card's price")
+            return item
+
+        tooltip = [f"Price: {format_money(price, currency)}"]
+        foil = card.price_usd_foil if currency == "USD" else card.price_eur_foil
+        if foil is not None:
+            tooltip.append(f"Foil: {format_money(foil, currency)}")
+
+        previous = self.price_changes.get(card.scryfall_id)
+
+        if previous:
+            previous_date, previous_price = previous
+            day = date.fromisoformat(previous_date)
+            tooltip.append(f"On {day.day} {day:%b}: {format_money(previous_price, currency)}")
+
+            if previous_price:
+                percent = (price - previous_price) / previous_price * 100
+
+                if abs(percent) >= PRICE_CHANGE_THRESHOLD:
+                    arrow = "▲" if percent > 0 else "▼"
+                    item.setText(f"{arrow} {abs(percent):.0f}%   {format_money(price, currency)}")
+                    item.setForeground(QColor(PRICE_UP_COLOR if percent > 0 else PRICE_DOWN_COLOR))
+
+        item.setToolTip("\n".join(tooltip))
+        return item
 
     def _quantity_cell(self, card):
         """
@@ -915,8 +1202,131 @@ class MainWindow(QWidget):
             if card.id == card_id:
                 card.quantity = quantity
 
+                value_item = self._value_items.get(card_id)
+                if value_item is not None:
+                    value_item.setText(format_money(card.value(self.currency), self.currency))
+
         self._update_collection_summary()
         self._update_owned_label()
+
+    # ==================================
+    # PRICES
+    # ==================================
+
+    def update_prices(self):
+        """
+        Download today's prices for the whole collection in the background.
+        """
+
+        if self._updating_prices:
+            return
+
+        self._updating_prices = True
+        self.update_prices_button.setEnabled(False)
+        self.update_prices_button.setText("Updating…")
+        self._update_prices_date()
+
+        self.background.run(
+            refresh_prices,
+            on_success=self._on_prices_updated,
+            on_error=self._on_prices_error,
+        )
+
+    def _finish_price_update(self):
+
+        self._updating_prices = False
+        self.update_prices_button.setEnabled(True)
+        self.update_prices_button.setText("Update prices")
+
+    def _on_prices_updated(self, result):
+
+        self._finish_price_update()
+        self.show_collection()
+
+        message = f"Prices updated for {plural(result['updated'], 'printing')}."
+
+        upgraded = result["upgraded"]
+        if upgraded:
+            entries = "1 older entry was" if upgraded == 1 else f"{upgraded} older entries were"
+            message += f" {entries} completed with the exact edition."
+        if result["missing"]:
+            message += f" {result['missing']} could not be found on Scryfall."
+
+        self._set_collection_status(message, "success")
+
+    def _on_prices_error(self, error):
+
+        self._finish_price_update()
+        self._update_prices_date()
+
+        if isinstance(error, ScryfallError):
+            text = "Could not update prices: no connection to Scryfall."
+        else:
+            text = f"Could not update prices: {error}"
+
+        self._set_collection_status(text, "error")
+
+    def _on_currency_changed(self, currency):
+
+        self.currency = currency
+        self.settings.setValue("currency", currency)
+
+        # Prices, values, sort order and the search page all depend on it
+        self.price_changes = get_price_changes(currency)
+        self._update_collection_summary()
+        self._render_collection()
+
+        if self.current_card is not None:
+            self._set_printings(self.printings, selected=self.current_card)
+            self._show_card(self.current_card)
+
+    # ==================================
+    # EXPORT
+    # ==================================
+
+    def export_collection(self):
+        """
+        Ask where to save the collection and in which format (CSV or TXT).
+        """
+
+        if not self.collection_cards:
+            self._set_collection_status("Your collection is empty: nothing to export.", "error")
+            return
+
+        last_folder = self.settings.value("export_folder", str(Path.home() / "Documents"))
+        suggested = str(Path(last_folder) / f"magic_collection_{date.today():%Y-%m-%d}.csv")
+
+        path, chosen_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export collection",
+            suggested,
+            f"{EXPORT_CSV_FILTER};;{EXPORT_TXT_FILTER}",
+        )
+
+        if not path:
+            return
+
+        # The chosen format decides the extension (and the file's content)
+        extension = ".txt" if chosen_filter == EXPORT_TXT_FILTER else ".csv"
+        path = Path(path)
+        if path.suffix.lower() != extension:
+            path = path.with_suffix(extension)
+
+        try:
+            count = save_collection_file(path)
+        except OSError as error:
+            self._set_collection_status(f"Could not save the file: {error}", "error")
+            return
+
+        self.settings.setValue("export_folder", str(path.parent))
+        self._set_collection_status(
+            f"Exported {plural(count, 'printing')} to {path}.", "success"
+        )
+
+    def _on_sort_changed(self):
+
+        self.settings.setValue("sort", self.sort_input.currentText())
+        self._render_collection()
 
     def delete_selected_cards(self):
 
@@ -957,7 +1367,7 @@ class MainWindow(QWidget):
 
         card = cards[0]
 
-        dialog = EditionDialog(card, self.background, self)
+        dialog = EditionDialog(card, self.background, self, currency=self.currency)
 
         if dialog.exec() != QDialog.DialogCode.Accepted or dialog.selected_card is None:
             return

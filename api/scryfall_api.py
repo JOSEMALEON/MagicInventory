@@ -7,6 +7,11 @@ from src.config import REQUEST_TIMEOUT, HTTP_HEADERS
 
 SCRYFALL_NAMED_URL = "https://api.scryfall.com/cards/named"
 SCRYFALL_SEARCH_URL = "https://api.scryfall.com/cards/search"
+SCRYFALL_COLLECTION_URL = "https://api.scryfall.com/cards/collection"
+SCRYFALL_SETS_URL = "https://api.scryfall.com/sets"
+
+# /cards/collection accepts at most 75 identifiers per request
+COLLECTION_BATCH_SIZE = 75
 
 
 class ScryfallError(Exception):
@@ -47,9 +52,26 @@ def _extract_mana_cost(data):
     return " // ".join(cost for cost in costs if cost)
 
 
+def _parse_price(value):
+    """
+    Scryfall sends prices as strings ("4.66") or null.
+    """
+
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _card_from_json(data):
 
+    prices = data.get("prices") or {}
+
     return Card(
+        price_eur=_parse_price(prices.get("eur")),
+        price_eur_foil=_parse_price(prices.get("eur_foil")),
+        price_usd=_parse_price(prices.get("usd")),
+        price_usd_foil=_parse_price(prices.get("usd_foil")),
         name=data.get("name"),
         set_name=data.get("set_name"),
         type_line=data.get("type_line"),
@@ -89,6 +111,74 @@ def _get_json(url, params=None):
         return response.json()
     except ValueError as error:
         raise ScryfallError("Scryfall returned an invalid response") from error
+
+
+def _post_json(url, payload):
+    """
+    POST JSON to Scryfall and return the decoded answer.
+    Raise ScryfallError if the request fails.
+    """
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=HTTP_HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as error:
+        raise ScryfallError(f"Could not connect to Scryfall: {error}") from error
+
+    if response.status_code != 200:
+        raise ScryfallError(f"Scryfall answered with status {response.status_code}")
+
+    try:
+        return response.json()
+    except ValueError as error:
+        raise ScryfallError("Scryfall returned an invalid response") from error
+
+
+def get_cards_by_identifiers(identifiers):
+    """
+    Fetch many cards at once with /cards/collection. Each identifier is a
+    dict like {"id": "<scryfall id>"} or {"name": "Sol Ring", "set": "cmm"}.
+
+    Return a list of (identifier, Card or None) in the same order.
+    Raise ScryfallError if a request fails.
+    """
+
+    results = []
+
+    for start in range(0, len(identifiers), COLLECTION_BATCH_SIZE):
+
+        if start:
+            # Scryfall asks for 50-100 ms between requests
+            time.sleep(0.1)
+
+        batch = identifiers[start:start + COLLECTION_BATCH_SIZE]
+        data = _post_json(SCRYFALL_COLLECTION_URL, {"identifiers": batch})
+
+        # The answer only lists the cards found, in order; "not_found" lists the rest
+        found = iter(data.get("data", []))
+        not_found = data.get("not_found", [])
+
+        for identifier in batch:
+            if identifier in not_found:
+                results.append((identifier, None))
+            else:
+                results.append((identifier, _card_from_json(next(found))))
+
+    return results
+
+
+def get_set_codes():
+    """
+    Return a dict {set name: set code} with every set Scryfall knows.
+    """
+
+    data = _get_json(SCRYFALL_SETS_URL) or {}
+
+    return {item["name"]: item["code"] for item in data.get("data", [])}
 
 
 def search_card_by_name(card_name):

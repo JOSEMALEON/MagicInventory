@@ -5,6 +5,21 @@ Small reusable widgets and helpers shared by the windows and dialogs.
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QSpinBox, QWidget
 
+from services.price_service import format_money
+
+
+def printing_text(card, currency):
+    """
+    Text of an edition in a combo box: "Commander Masters (CMM #410) — €4.66".
+    """
+
+    price = card.price(currency)
+
+    if price is None:
+        return card.printing_label
+
+    return f"{card.printing_label}  —  {format_money(price, currency)}"
+
 
 def styled_panel(name, layout):
     """

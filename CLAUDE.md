@@ -7,7 +7,7 @@ Repositorio: https://github.com/JOSEMALEON/MagicInventory (rama `main`).
 ## Cómo ejecutar
 
 ```bash
-pip install PySide6 requests
+pip install -r requirements.txt   # solo PySide6 y requests
 python main.py
 ```
 
@@ -23,17 +23,25 @@ main.py                      -> crea QApplication, carga estilos, abre MainWindo
 src/config.py                -> rutas absolutas (BASE_DIR, DB_PATH, STYLES_PATH, ASSETS_DIR, IMAGE_CACHE_DIR), red, RARITY_COLORS
 src/ui/main_window.py        -> ventana: topbar, sidebar, páginas Search (panel de carta) y Collection (tabla + gestión)
 src/ui/edition_dialog.py     -> EditionDialog: elegir otra edición para una carta de la colección (con vista previa)
-src/ui/widgets.py            -> styled_panel(), set_status(label, text, state), QuantitySpinBox (ignora la rueda sin foco)
+src/ui/import_page.py        -> ImportPage: pegar/cargar una lista, comprobarla en Scryfall y añadir las cartas
+src/ui/widgets.py            -> styled_panel(), set_status(label, text, state), printing_text(card, currency),
+                                QuantitySpinBox (ignora la rueda sin foco)
 src/ui/background.py         -> BackgroundRunner: run(fn, on_success, on_error) en un QThreadPool (4 hilos); callbacks en el hilo GUI
 src/ui/styles.qss            -> tema oscuro (paleta documentada en la cabecera); @ASSETS@ lo sustituye main.py por la ruta absoluta
 services/card_service.py     -> fachada UI <-> api/database: search_card, get_printings, save_card, get_collection,
                                 remove_cards, set_quantity, change_card_printing
 services/image_service.py    -> load_card_image(url, w, h) -> QImage (caché en cache/images/<sha1(url)>.jpg); to_pixmap()
-api/scryfall_api.py          -> búsqueda fuzzy (/cards/named) y ediciones (prints_search_uri, o /cards/search
-                                q=!"nombre" para cartas de la BD, que no guardan esa URI)
+services/list_service.py     -> listas de cartas: parse_card_list, read_list_file (.txt/.csv), resolve_entries,
+                                add_found_cards, export_collection (.csv con precios o .txt reimportable)
+services/price_service.py    -> refresh_prices() (completa filas antiguas + precios de toda la colección),
+                                prices_need_update, last_price_update, get_price_changes, format_money
+api/scryfall_api.py          -> búsqueda fuzzy (/cards/named), ediciones (prints_search_uri, o /cards/search
+                                q=!"nombre" para cartas de la BD), get_cards_by_identifiers (/cards/collection,
+                                lotes de 75), get_set_codes (/sets: nombre de edición -> código)
 database/database_manager.py -> SQLite: create_database (con migración), add_card, get_all_cards,
-                                delete_cards, update_quantity, change_printing (fusiona si la edición ya existe)
-models/card.py               -> clase Card (card.id = id de fila en la BD, None si viene de Scryfall)
+                                delete_cards, update_quantity, change_printing (fusiona si la edición ya existe),
+                                save_prices, get_previous_prices
+models/card.py               -> clase Card (card.id = id de fila en la BD; price(currency), value(currency))
 assets/icons/                -> SVG de la interfaz (flechas de combo/spinbox)
 ai/recommender.py            -> vacío (reservado para la parte de IA)
 ```
@@ -47,7 +55,16 @@ Flujo: buscar -> `search_card()` -> Scryfall -> `Card` -> imagen + datos en el p
 ## Modelo de datos
 
 Tabla `cards`: `id, name, set_name, type_line, mana_cost, rarity, image_url, quantity,
-scryfall_id, set_code, collector_number`.
+scryfall_id, set_code, collector_number, price_eur, price_eur_foil, price_usd, price_usd_foil,
+prices_updated_at`.
+
+Tabla `price_history`: `scryfall_id, date, price_eur, price_eur_foil, price_usd, price_usd_foil`
+(clave `scryfall_id + date`: una fila por edición y día; el mismo día se sobrescribe).
+
+- Precios de **una copia no foil**; si la edición solo existe en foil se usa el foil (`Card.price()`).
+  Todavía no se distingue si las copias del usuario son foil.
+- Cualquier `Card` que llega de Scryfall y se guarda (`add_card`, `change_printing`) guarda también
+  sus precios (`_store_prices`).
 
 - **Una fila = una edición concreta (printing)**, identificada por `scryfall_id`
   (índice único parcial `idx_cards_scryfall_id`, solo para filas con id).
@@ -131,15 +148,50 @@ scryfall_id, set_code, collector_number`.
 - Probar sin tocar la colección real: copiar `magic_inventory.db` a un temporal y asignar
   `database.database_manager.DB_PATH` antes de crear la ventana.
 
-## Pendiente (en este orden)
+### Hecho (limpieza, 10 nov 2026)
+- `requirements.txt` reescrito en UTF-8 con solo `PySide6>=6.10` y `requests>=2.32`
+  (antes era un `pip freeze` en UTF-16 con PyAutoGUI, pynput, keyboard...).
 
-1. **Limpieza:** `requirements.txt` está en UTF-16 y es un `pip freeze` del entorno completo
-   (PyAutoGUI, pynput, keyboard... que no se usan). Dejar solo `PySide6` y `requests`, en UTF-8.
+### Hecho (seguimiento de precios, roadmap, 10 nov 2026 — commit PENDING_HASH)
+- Precios EUR/USD (normal y foil) de Scryfall guardados por fila + historial diario (`price_history`).
+- "Update prices" y actualización automática al abrir si los precios tienen > 20 h (`PRICES_MAX_AGE`).
+  Usa `/cards/collection` (75 cartas por petición).
+- La actualización también **completa las filas antiguas** sin `scryfall_id`: traduce `set_name` a
+  código con `/sets` y busca `{"name", "set"}`; luego `change_printing()` les pone edición exacta y
+  precios. Si la edición tiene varias versiones (p. ej. varios Swamp), Scryfall elige una.
+- Colección: columnas Price (con ▲/▼ % si cambió ≥ 1 % desde el último precio de un día anterior;
+  detalle y foil en el tooltip) y Value (precio × cantidad); cabecera con valor total, variación y
+  fecha de actualización; orden por valor o precio.
+- Moneda EUR/USD y orden de la tabla se recuerdan con `QSettings("MagicInventory", "MagicInventory")`.
+- Search: pastilla de precio ("€4.66 · Foil €12.00") y precio en cada edición del desplegable (también
+  en `EditionDialog`). Al llegar la lista de ediciones se usa su copia de la carta: `/cards/named`
+  a veces devuelve la misma edición sin precio EUR.
+- En los tests, redirigir `QSettings` a un .ini temporal para no tocar el registro del usuario.
 
-   Ideas de mejora detectadas: deshacer el último borrado; mostrar colores de rareza también en
-   filas seleccionadas; guardar orden/filtro elegidos entre sesiones.
+### Hecho (importar/exportar listas, 10 nov 2026 — commit PENDING_HASH)
+- Sidebar: Search, **Import cards**, Collection. `show_page()` usa un dict página -> botón.
+- Formato de lista: `4 Sol Ring`, `4x Sol Ring`, `1 Sol Ring (CMM) 410`. Se ignoran líneas vacías,
+  comentarios (`#`, `//`), cabeceras ("Deck", "Sideboard:"...) y marcas `*F*`. Una línea sin cantidad
+  o con cantidad fuera de 1-999 es un **error de sintaxis con su número de línea**.
+- CSV de entrada: columna "Name" obligatoria; "Quantity", "Set Code", "Collector Number" opcionales
+  (los alias se prueban por orden de preferencia: "Set Code" gana a "Set"). Se convierte a texto
+  en el área de la lista para revisarlo.
+- "Check list" busca en lote con `/cards/collection` (acepta minúsculas y la cara frontal de cartas
+  dobles). Las no encontradas salen en rojo con su línea y una sugerencia fuzzy ("Did you mean…?",
+  máximo 20 peticiones), y además en un `QMessageBox.warning`. Se pueden añadir solo las encontradas;
+  editar la lista invalida el resultado.
+- "Export…" en la colección: CSV (utf-8-sig para Excel, con precios y valores) o TXT
+  (`3 Sol Ring (TMC) 59`), que se puede reimportar conservando la edición exacta (probado).
+- Lista de prueba del autor (10 cartas, todas existen): Ancient Den, Bronze Guardian,
+  Crystal Skull Isu Spyglass, Golbez Crystal Collector, Illustrious Wanderglyph, Iron Spider Stark
+  Upgrade, The Cyber-Controller, Uthros Research Craft, Worldwalker Helm, Wurmcoil Engine.
+
+## Pendiente
+
+- Ideas de mejora: deshacer el último borrado; mostrar colores de rareza también en
+  filas seleccionadas; guardar el filtro entre sesiones; marcar copias foil (precio foil).
 
 ## Roadmap del README (a largo plazo)
 Filtros avanzados de la colección (ya hay filtro de texto; faltan filtros por campo), contador de vidas
 (multijugador, Commander), asistente de IA para interacciones entre cartas, deck builder,
-estadísticas, exportar a CSV/JSON, seguimiento de precios.
+estadísticas, exportar a JSON. (Hechos: seguimiento de precios, exportar/importar CSV y TXT.)

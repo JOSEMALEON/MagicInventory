@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 
 from services.card_service import get_printings
 from services.image_service import load_card_image, to_pixmap
-from src.ui.widgets import set_status
+from src.ui.widgets import printing_text, set_status
 
 PREVIEW_WIDTH = 244
 PREVIEW_HEIGHT = 340
@@ -26,10 +26,11 @@ class EditionDialog(QDialog):
             new_card = dialog.selected_card
     """
 
-    def __init__(self, card, background, parent=None):
+    def __init__(self, card, background, parent=None, currency="EUR"):
         super().__init__(parent)
 
         self.card = card
+        self.currency = currency
         self.background = background
         self.printings = []
         self.selected_card = None
@@ -130,7 +131,7 @@ class EditionDialog(QDialog):
         selected_index = 0
 
         for index, printing in enumerate(printings):
-            self.edition_input.addItem(printing.printing_label)
+            self.edition_input.addItem(printing_text(printing, self.currency))
 
             if self.card.scryfall_id and printing.scryfall_id == self.card.scryfall_id:
                 selected_index = index
